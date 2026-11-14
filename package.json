@@ -1,6 +1,6 @@
 {
   "name": "dsh-better-task-grapth",
-  "version": "0.3.1-rc.44",
+  "version": "0.3.1-rc.54",
   "description": "Transactional task graphs with a conversation panel for DeepSeek Harness",
   "license": "GPL-3.0-only",
   "keywords": [
