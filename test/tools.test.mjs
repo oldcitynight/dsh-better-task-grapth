@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createToolDefinitions, TOOL_NAMES } from '../tools.mjs'
+import { normalizePlan } from '../core.mjs'
+import { defineTool, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 
 const execution = (callId = 'call-fixture') => ({ agent: { id: 'agent-fixture' }, callId, signal: new AbortController().signal })
 const find = (tools, suffix) => tools.find(tool => tool.name.endsWith(suffix))
@@ -21,6 +23,19 @@ test('only read is classified read/protocol; no mutation bypasses normal permiss
   assert.deepEqual(tools.map(tool => tool.name), [...TOOL_NAMES])
   assert.equal(find(tools, '_read').projectPlanCapability, 'read_or_protocol')
   assert.equal(tools.filter(tool => tool.name !== TOOL_NAMES[0]).some(tool => tool.projectPlanCapability !== undefined), false)
+})
+test('the published tool descriptions include JSON arguments accepted by their tool schemas', () => {
+  const tools = createToolDefinitions({ defineTool })
+  const samplesByTool = new Map()
+  for (const tool of tools) {
+    const samples = [...tool.description.matchAll(/```json\n([^\n]+)\n```/g)].map(match => JSON.parse(match[1]))
+    assert.ok(samples.length, tool.name)
+    for (const args of samples) assert.deepEqual(validateJsonSchemaValue(tool.parameters, args, ''), [], tool.name)
+    samplesByTool.set(tool.name, samples)
+  }
+  const [serial, conditional] = samplesByTool.get('transaction_graph_create')
+  assert.deepEqual(normalizePlan(serial.definition).edges.map(edge => edge.kind), ['prerequisite'])
+  assert.deepEqual(normalizePlan(conditional.definition, { enableSwitch: true }).edges.map(edge => edge.kind), ['case', 'route'])
 })
 test('writes produce host-generated operation IDs and pending intents, never pretend committed completion', async () => {
   const port = connectedPort(), tools = createToolDefinitions({ defineTool: value => value, hostPort: port })
