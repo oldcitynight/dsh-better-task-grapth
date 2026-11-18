@@ -1,3 +1,12 @@
+# 0.3.1-rc.62
+
+- 支持分组与分层终审、终点门控、暂停与恢复，并在会话中展示工作进度。
+
+# 0.3.1-rc.42
+
+- Generic located validation feedback and syntax normalization; host-only readArtifactIdentity export. Standalone task-graph behavior and the 16 MiB default artifact policy remain unchanged.
+- Keep published version history below unchanged; this local work has not been published.
+
 # 0.3.1-rc.42
 
 - npm 包、Bundle 名称和 GitHub 仓库更名为 `dsh-better-task-grapth`。
