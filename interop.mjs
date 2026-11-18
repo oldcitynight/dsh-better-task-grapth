@@ -17,6 +17,10 @@ export class WorkflowRegistry {
     if (this.closed || adapter?.contract !== WORKFLOW_CONTRACT || !name(adapter.kind) || !name(adapter.workflowId)
         || !Number.isSafeInteger(adapter.version) || adapter.version !== 1 || typeof adapter.read !== 'function'
         || typeof adapter.execute !== 'function' || typeof adapter.authorize !== 'function'
+        || adapter.readGraphView !== undefined && typeof adapter.readGraphView !== 'function'
+        || adapter.readExecutionView !== undefined && typeof adapter.readExecutionView !== 'function'
+        || adapter.readExecutionOutput !== undefined && typeof adapter.readExecutionOutput !== 'function'
+        || adapter.controlExecution !== undefined && typeof adapter.controlExecution !== 'function'
         || !Array.isArray(adapter.operations) || adapter.operations.some(operation => !name(operation))
         || new Set(adapter.operations).size !== adapter.operations.length) fail('WORKFLOW_ADAPTER_CONTRACT_REQUIRED')
     if (typeof adapter.projectRoot !== 'string' || !path.isAbsolute(adapter.projectRoot)
@@ -68,6 +72,44 @@ export class WorkflowRegistry {
     return result
   }
   read(agent, reference) { return this.snapshot(this.entry(reference, agent)) }
+  graphView(agent) {
+    const providers = []
+    for (const entry of this.entries.values()) {
+      if (!entry.readGraphView) continue
+      try { this.authorize(entry, agent) } catch { continue }
+      providers.push(entry)
+    }
+    if (providers.length > 1) fail('WORKFLOW_GRAPH_VIEW_AMBIGUOUS')
+    return providers[0]?.readGraphView() ?? null
+  }
+  executionProvider(agent) {
+    const providers = [...this.entries.values()].filter(entry => {
+      if (!entry.readExecutionView) return false
+      try { this.authorize(entry, agent); return true } catch { return false }
+    })
+    if (providers.length > 1) fail('WORKFLOW_EXECUTION_VIEW_AMBIGUOUS')
+    return providers[0]
+  }
+  executionView(agent) { return copy(this.executionProvider(agent)?.readExecutionView() ?? null) }
+  async executionOutput(agent, request, signal) {
+    const entry = this.executionProvider(agent)
+    if (!entry || entry.workflowId !== request.workflowId || !entry.readExecutionOutput) fail('WORKFLOW_EXECUTION_OUTPUT_UNAVAILABLE')
+    const scope = AbortSignal.any([entry.lifecycle.signal, ...(signal ? [signal] : [])])
+    scope.throwIfAborted()
+    const value = await entry.readExecutionOutput(copy(request), { agent, signal: scope })
+    scope.throwIfAborted(); this.authorize(entry, agent)
+    return copy(value)
+  }
+  async controlExecution(agent, { workflowId, action }, signal) {
+    const entry = this.executionProvider(agent)
+    if (!entry || entry.workflowId !== workflowId || !entry.controlExecution || !['pause', 'resume'].includes(action))
+      fail('WORKFLOW_EXECUTION_CONTROL_UNAVAILABLE')
+    const scope = AbortSignal.any([entry.lifecycle.signal, ...(signal ? [signal] : [])])
+    scope.throwIfAborted()
+    await entry.controlExecution(action, { agent, signal: scope })
+    this.authorize(entry, agent)
+    return this.executionView(agent)
+  }
   async dispatch(agent, reference, operation, request, signal) {
     const entry = this.entry(reference, agent)
     if (!entry.operations.includes(operation) || !request || typeof request !== 'object' || Array.isArray(request)) fail('WORKFLOW_OPERATION_NOT_SUPPORTED')

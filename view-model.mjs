@@ -42,14 +42,15 @@ export function graphPresentation(graph, selectedId) {
   }
   const active = graph.active ? nodes.get(graph.active.nodeId) ?? null : null
   const legal = new Set(graph.legalNext.map(choice => choice.id))
-  const selected = nodes.get(selectedId) ?? active ?? nodes.get(graph.legalNext[0]?.id) ?? children.get(null)?.[0] ?? null
-  const conditionIds = new Set(chainEdges(graph).filter(edge => edge.to === selected?.id).map(edge => edge.from))
+  const selected = nodes.get(selectedId) ?? active ?? nodes.get(graph.hierarchy?.pending?.scopeId) ?? nodes.get(graph.legalNext[0]?.id) ?? children.get(null)?.[0] ?? null
+  const entryEdges = chainEdges(graph).filter(edge => edge.to === selected?.id)
+  const conditionIds = new Set(entryEdges.map(edge => edge.from))
   const conditions = [...conditionIds].map(id => nodes.get(id)).filter(Boolean)
   const allLeaves = graph.nodes.filter(node => node.kind === 'leaf')
   const leaves = allLeaves.filter(node => node.branchState !== 'NOT_SELECTED')
   const count = status => leaves.filter(node => node.status === status).length
   return {
-    nodes, children, active, legal, selected, conditions,
+    nodes, children, active, legal, selected, conditions, entryEdges,
     progress: {
       total: leaves.length, complete: count('COMPLETE'), incomplete: count('INCOMPLETE'),
       skipped: count('SKIPPED'), inactive: count('INACTIVE'), excluded: allLeaves.length - leaves.length, ready: legal.size,
@@ -60,6 +61,7 @@ export function graphPresentation(graph, selectedId) {
 function branchEdgeState(edge, source, target) {
   if (source.branchState === 'NOT_SELECTED' || target.branchState === 'NOT_SELECTED') return 'branchExcluded'
   if (edge.kind === 'prerequisite') {
+    if (target.isTerminal && target.kind === 'leaf' && ['INCOMPLETE','SKIPPED'].includes(source.status)) return 'dispositionReady'
     if (source.status === 'COMPLETE') return 'prerequisiteMet'
     if (source.status === 'INCOMPLETE' || source.status === 'SKIPPED' || source.blocked) return 'blocked'
     return 'edgeWaiting'
@@ -72,11 +74,16 @@ function branchEdgeState(edge, source, target) {
 
 // Rank by explicit dependencies. Containers stay in the tree unless they
 // participate in a dependency. A leaf still shows which container it belongs to.
-export function branchLayout(graph) {
+export function branchLayout(graph, scopeId = graph.hierarchy?.focusScopeId, options = {}) {
+  if (graph.hierarchy && options.expandedGroups) return groupedLayout(graph, new Set(options.collapsedIds ?? []))
+  if (graph.hierarchy && scopeId) {
+    const nodes = graph.nodes.filter(node => node.parent === scopeId), ids = new Set(nodes.map(node => node.id))
+    graph = { ...graph, nodes, edges: graph.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)) }
+  }
   const nodesById = new Map(graph.nodes.map(node => [node.id, node]))
   const edges = chainEdges(graph).filter(edge => nodesById.has(edge.from) && nodesById.has(edge.to))
   const connected = new Set(edges.flatMap(edge => [edge.from, edge.to]))
-  const nodes = graph.nodes.filter(node => node.kind === 'leaf' || connected.has(node.id))
+  const nodes = graph.nodes.filter(node => graph.hierarchy || node.kind === 'leaf' || connected.has(node.id))
   const outgoing = new Map(nodes.map(node => [node.id, []]))
   const incoming = new Map(nodes.map(node => [node.id, []]))
   for (const edge of edges) {
@@ -97,25 +104,24 @@ export function branchLayout(graph) {
   const columns = Array.from({ length: 1 + Math.max(0, ...rank.values()) }, () => [])
   for (const node of nodes) columns[rank.get(node.id)].push(node)
 
-  const padding = 26, cardWidth = 194, cardHeight = 84, columnGap = 104, rowGap = 26
+  const padding = 30, cardWidth = 232, cardHeight = 112, columnGap = 120, rowGap = 32
   const rows = Math.max(1, ...columns.map(column => column.length))
   const bodyHeight = rows * (cardHeight + rowGap) - rowGap
   const cards = columns.flatMap((column, index) => column.map((node, row) => ({
     node,
-    group: nodesById.get(node.parent)?.label,
+    group: nodesById.get(node.parent)?.parent ? nodesById.get(node.parent).label : null,
+    ordinal: nodes.indexOf(node) + 1,
     column: index,
     additionalPrerequisites: 0,
     x: padding + index * (cardWidth + columnGap),
     y: padding + (rows - column.length) * (cardHeight + rowGap) / 2 + row * (cardHeight + rowGap),
   })))
   const cardById = new Map(cards.map(card => [card.node.id, card]))
-  const drawnEdges = new Set(edges.filter(edge => {
-    const source = cardById.get(edge.from), target = cardById.get(edge.to)
-    if (edge.kind !== 'prerequisite' || target.column === source.column + 1) return true
-    // The entry list still shows independent prerequisites that skip a column.
-    target.additionalPrerequisites += 1
-    return false
-  }))
+  // A long prerequisite can be an independent condition at a branch join.
+  // Only chainEdges may reduce a proven redundant prerequisite; distance in
+  // the layout does not imply redundancy. Keep every remaining edge and use
+  // the existing below-card lanes for links that span multiple columns.
+  const drawnEdges = new Set(edges)
   for (const [id, group] of outgoing)
     outgoing.set(id, group.filter(edge => drawnEdges.has(edge)).sort((a, b) => cardById.get(a.to).y - cardById.get(b.to).y))
   for (const [id, group] of incoming)
@@ -138,7 +144,8 @@ export function branchLayout(graph) {
     const state = branchEdgeState(edge, from.node, to.node)
     const wire = { edge, from: from.node, to: to.node, state,
       key: JSON.stringify([edge.from, edge.to, edge.kind, edge.outcome ?? edge.case]),
-      showLabel: edge.kind !== 'prerequisite' && (parallel.get(pairKey(edge)) === 1 || state === 'branchChosen') }
+      labelWidth: columnGap - 18,
+      showLabel: state === 'dispositionReady' || edge.kind !== 'prerequisite' && (parallel.get(pairKey(edge)) === 1 || state === 'branchChosen') }
     if (to.column - from.column > 1) {
       // Route rank-skipping edges below the cards so they do not cross a task.
       const laneY = padding + bodyHeight + 22 + laneCount++ * 16
@@ -154,4 +161,85 @@ export function branchLayout(graph) {
     width: columns.length * (cardWidth + columnGap) - columnGap + 2 * padding,
     height: bodyHeight + 2 * padding + laneCount * 16 + (laneCount ? 12 : 0),
   }
+}
+
+// An expanded group is a visual boundary, not a synthetic task/dependency.
+// Reuse the ordinary per-scope reduction and states, then place whole groups
+// vertically and their leaf workflows horizontally. All coordinates are local
+// until the final flattening pass; execution/RPC data is never changed.
+function groupedLayout(graph, collapsed) {
+  const root = graph.nodes.find(node => node.parent === null)
+  const children = new Map()
+  for (const node of graph.nodes) {
+    const rows = children.get(node.parent) ?? []
+    rows.push(node); children.set(node.parent, rows)
+  }
+  const pad = 24, header = 58, gap = 76
+  function scopeLayout(scope, ancestors = new Set()) {
+    if (ancestors.has(scope.id)) return { cards: [], groups: [], wires: [], width: 280, height: 80 }
+    const seen = new Set(ancestors).add(scope.id)
+    const local = branchLayout(graph, scope.id)
+    const members = children.get(scope.id) ?? []
+    if (!members.some(node => node.kind === 'container')) return {
+      ...local, groups: [], cards: local.cards.map(card => ({ ...card,
+        group: scope.parent ? scope.label : null, width: local.cardWidth, height: local.cardHeight })),
+      wires: local.wires.map(wire => ({ ...wire, scopeId: scope.id, offsetX: 0, offsetY: 0 })),
+    }
+    const items = local.cards.map(card => {
+      const open = card.node.kind === 'container' && !collapsed.has(card.node.id)
+      const body = open ? scopeLayout(card.node, seen) : null
+      return { ...card, body, width: body ? Math.max(480, body.width) : local.cardWidth,
+        height: body ? header + body.height : local.cardHeight }
+    })
+    const ranks = []
+    for (const item of items) (ranks[item.column] ??= []).push(item)
+    const rankWidth = rows => rows.reduce((sum, item) => sum + item.width, 0) + Math.max(0, rows.length - 1) * gap
+    const width = Math.max(360, ...ranks.map(rankWidth)) + pad * 2
+    let cursor = pad
+    for (const rows of ranks) {
+      let x = (width - rankWidth(rows)) / 2
+      for (const item of rows) { item.x = x; item.y = cursor; x += item.width + gap }
+      cursor += Math.max(...rows.map(item => item.height)) + gap
+    }
+    const height = cursor - gap + pad
+    const byId = new Map(items.map(item => [item.node.id, item]))
+    let lanes = 0
+    const wires = local.wires.map(wire => {
+      const from = byId.get(wire.edge.from), to = byId.get(wire.edge.to)
+      const exits = local.wires.filter(row => row.edge.from === from.node.id)
+      const entries = local.wires.filter(row => row.edge.to === to.node.id)
+      const offset = rows => (rows.indexOf(wire) - (rows.length - 1) / 2) * Math.min(14, 60 / rows.length)
+      const sx = from.x + from.width / 2 + offset(exits), sy = from.y + from.height
+      const ex = to.x + to.width / 2 + offset(entries), ey = to.y - 2
+      const rowBottom = Math.max(...ranks[from.column].map(item => item.y + item.height))
+      const mid = (rowBottom + ey) / 2
+      let route = `M ${sx} ${sy} V ${mid} H ${ex} V ${ey}`
+      let labelX = (sx + ex) / 2, labelY = mid
+      if (to.column - from.column > 1) {
+        const lane = width + 16 + lanes++ * 18
+        const exitY = rowBottom + 16 + exits.indexOf(wire) / exits.length * 16
+        const entryY = ey - 16 - entries.indexOf(wire) / entries.length * 16
+        route = `M ${sx} ${sy} V ${exitY} H ${lane} V ${entryY} H ${ex} V ${ey}`
+        labelX = lane; labelY = (exitY + entryY) / 2
+      }
+      return { ...wire, path: route, labelX, labelY, labelWidth: 100, scopeId: scope.id, offsetX: 0, offsetY: 0 }
+    })
+    const cards = [], groups = []
+    for (const { body, ...item } of items) {
+      if (!body) { cards.push(item); continue }
+      const dx = item.x + (item.width - body.width) / 2, dy = item.y + header
+      groups.push({ ...item, taskCount: descendants(item.node.id).filter(node => node.kind === 'leaf').length })
+      cards.push(...body.cards.map(card => ({ ...card, x: card.x + dx, y: card.y + dy })))
+      groups.push(...body.groups.map(group => ({ ...group, x: group.x + dx, y: group.y + dy })))
+      wires.push(...body.wires.map(wire => ({ ...wire, offsetX: wire.offsetX + dx, offsetY: wire.offsetY + dy })))
+    }
+    return { cards, groups, wires, width: width + (lanes ? lanes * 18 + 62 : 0), height,
+      cardWidth: local.cardWidth, cardHeight: local.cardHeight }
+  }
+  function descendants(id, seen = new Set()) {
+    if (seen.has(id)) return []
+    seen.add(id)
+    return (children.get(id) ?? []).flatMap(node => [node, ...(node.kind === 'container' ? descendants(node.id, seen) : [])])
+  }
+  return root ? scopeLayout(root) : branchLayout({ ...graph, hierarchy: undefined })
 }

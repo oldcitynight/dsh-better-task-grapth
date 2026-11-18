@@ -25,11 +25,20 @@ const graph = {
   legalNext: [], skipChoices: [],
 }
 
-test('the shared RPC admits one strict, cancellable read and rejects private fields', () => {
+test('the shared RPC admits strict session-scoped status and execution controls and rejects private fields', () => {
   const contribution = createRemoteContribution(z)
   const [endpoint] = contribution.descriptors
   assert.equal(contribution.package, 'dsh-better-task-grapth')
-  assert.equal(contribution.descriptors.length, 1)
+  assert.equal(contribution.descriptors.length, 4)
+  const output = contribution.descriptors.find(row => row.method === 'output')
+  const body = contribution.descriptors.find(row => row.method === 'outputBody')
+  assert.equal(output.parameters[0].codec.create().safeParse({ sessionId: 's', workflowId: 'w', cursor: 0 }).success, true)
+  assert.equal(output.parameters[0].codec.create().safeParse({ sessionId: 's', workflowId: 'w', cursor: -1 }).success, false)
+  assert.equal(body.parameters[0].codec.create().safeParse({ sessionId: 's', workflowId: 'w', itemId: '../../secret' }).success, false)
+  const control = contribution.descriptors[1]
+  assert.equal(control.method, 'control')
+  assert.equal(control.parameters[0].codec.create().safeParse({ sessionId: 's', workflowId: 'w', action: 'resume' }).success, true)
+  assert.equal(control.parameters[0].codec.create().safeParse({ sessionId: 's', workflowId: 'w', action: 'reset' }).success, false)
   assert.equal(endpoint.service, 'transactionGraph')
   assert.equal(endpoint.namespace + '/' + endpoint.method, 'transactionGraphView/status')
   assert.equal(endpoint.cancellation.parameter, 'signal')
@@ -71,8 +80,8 @@ test('the branch canvas ranks dependencies and distinguishes chosen, excluded an
   assert.deepEqual(layout.cards.map(card => [card.node.id, card.column]),
     [['prepare', 0], ['inspect', 1], ['ship', 2], ['escalate', 2], ['optional', 3]])
   assert.deepEqual(layout.wires.map(wire => wire.state),
-    ['prerequisiteMet', 'branchExcluded', 'branchChosen', 'blocked'])
-  assert.equal(layout.cards.find(card => card.node.id === 'optional').additionalPrerequisites, 1)
+    ['prerequisiteMet', 'branchExcluded', 'branchChosen', 'prerequisiteMet', 'blocked'])
+  assert.equal(layout.cards.find(card => card.node.id === 'optional').additionalPrerequisites, 0)
   assert.equal(layout.cards.find(card => card.node.id === 'inspect').group, 'Checks')
   assert.deepEqual(graphPresentation(updated, 'optional').conditions.map(node => [node.id, node.disposition]),
     [['prepare', 'COMPLETED'], ['escalate', 'FAILED']])
@@ -100,14 +109,14 @@ test('an intermediate branch gate or a container keeps the explicit prerequisite
   ] }
   assert.deepEqual(graphPresentation(gated, 'optional').conditions.map(node => node.id), ['inspect', 'prepare'])
   const gatedLayout = branchLayout(gated)
-  assert.equal(gatedLayout.cards.find(card => card.node.id === 'optional').additionalPrerequisites, 1)
+  assert.equal(gatedLayout.cards.find(card => card.node.id === 'optional').additionalPrerequisites, 0)
   assert.ok(gatedLayout.wires.some(wire => wire.edge.kind === 'case'))
 
   const grouped = { ...graph, edges: [
     prerequisite('check-group', 'ship'), prerequisite('ship', 'optional'), prerequisite('check-group', 'optional'),
   ] }
   assert.deepEqual(graphPresentation(grouped, 'optional').conditions.map(node => node.id), ['ship', 'check-group'])
-  assert.equal(branchLayout(grouped).cards.find(card => card.node.id === 'optional').additionalPrerequisites, 1)
+  assert.equal(branchLayout(grouped).cards.find(card => card.node.id === 'optional').additionalPrerequisites, 0)
 })
 
 test('branch markers cross the Web RPC and remove unselected work from progress', () => {
@@ -172,4 +181,38 @@ test('generated bundle registers the graph in the existing session composer dock
   assert.equal(endpoint.namespace, 'transactionGraphView')
   assert.equal(entry.id, 'project-transaction-graph')
   assert.equal(entry.name, 'conversation.input.dock')
+})
+
+test('empty polling and quick initial reads stay hidden; slow reads and failures remain visible', async () => {
+  const source = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+  let result, stateIndex, Dock, plugin, refreshes = 0
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props, children }),
+    useState: initial => [stateIndex++ === 0 ? result : initial, () => { refreshes++ }],
+    useRef: current => ({ current }), useEffect() {}, useMemo: fn => fn(),
+  }
+  vm.runInNewContext(source, { window: { __ModuleLoader__: { load(row) {
+    plugin = row.factory(name => ({ react: React, zod: { z } })[name])
+  } } } })
+  const ctx = { effect() {}, remote: { transactionGraphView: {}, async $mount() { return () => {} } },
+    inject(_deps, callback) { callback(this) }, slots: { inject(_name, callback) { callback() }, register(_spec, component) { Dock = component } } }
+  await plugin.apply(ctx)
+  const render = (value, access = true, open = true) => {
+    result = value; stateIndex = 0
+    return Dock({ sessionId: 's', useAccess: () => access,
+      useSession: select => select({ openState: open ? 'open' : 'closed', removed: false, running: false }), t: key => key })
+  }
+  const text = node => typeof node === 'string' ? node : node?.children?.map(text).join(' ') ?? ''
+  assert.equal(render(null), null)
+  assert.equal(render({ sessionId: 's', graph: null, busy: true, failed: false }), null)
+  assert.match(text(render({ sessionId: 's', graph: null, busy: true, failed: false, showLoading: true })), /loading/)
+  assert.equal(render({ sessionId: 's', status: 'empty', graph: null, busy: true, failed: false, showLoading: true }), null)
+  const failed = render({ sessionId: 's', graph: null, busy: false, failed: true })
+  assert.match(text(failed), /unavailable/)
+  const retry = failed.children.find(node => node?.type === 'button')
+  assert.equal(retry.props.disabled, false); retry.props.onClick(); assert.equal(refreshes, 1)
+  assert.equal(render({ sessionId: 's', graph: null, execution: null, busy: false, failed: false }), null)
+  assert.equal(render({ sessionId: 'old-session', graph, busy: false, failed: false }), null)
+  assert.equal(render({ sessionId: 's', graph, busy: false, failed: true }).type.name, 'GraphPanel')
+  assert.equal(render(null, false), null); assert.equal(render(null, true, false), null)
 })
