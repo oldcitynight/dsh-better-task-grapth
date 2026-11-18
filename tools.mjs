@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+import { checkedTool } from './validation.mjs'
 import { createHash } from 'node:crypto'
 import { GraphError, copy } from './core.mjs'
 
@@ -101,7 +102,7 @@ export function createToolDefinitions({ defineTool, hostPort = new UnconnectedHo
       description: 'Stage a displayed pending skip choice when no leaf is active. A skip leaves prerequisites unmet and routes inactive. Copy the latest revision and displayed choice.'
         + '\n' + argumentExample('Skip a pending optional leaf', { expectedRevision: 1, choice: 0, evidence: [], note: 'The optional leaf is outside the selected scope.' }) },
   ]
-  return definitions.map(({ operation, ...tool }) => defineTool({ ...tool,
+  return definitions.map(({ operation, ...tool }) => checkedTool(defineTool, { ...tool,
     ...(operation === 'read' ? { projectPlanCapability: 'read_or_protocol' } : {}),
     output: { schema: { type: 'object', properties: {}, additionalProperties: true },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
