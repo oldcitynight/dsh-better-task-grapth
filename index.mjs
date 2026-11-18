@@ -1,20 +1,32 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { z } from 'zod'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool as nativeDefineTool } from '@deepseek-ai/dsh-tools'
+import { checkedTool } from './validation.mjs'
+const defineTool = options => checkedTool(nativeDefineTool, options)
 import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { createToolDefinitions } from './tools.mjs'
-import { DshTransactionHost } from './host.mjs'
+import { DshTransactionHost, formatGraphView } from './host.mjs'
 import { projection, KEY } from './projection.mjs'
 import { createRemoteContribution } from './remote.mjs'
 import { WorkflowRegistry, WORKFLOW_CONTRACT } from './interop.mjs'
 import { EXTENSION_CONTRACT, SessionPolicies } from './extensions.mjs'
 import { FileGraphStore } from './store.mjs'
+import { installGraphCommand } from './commands.mjs'
 
 export const name = 'dsh-better-task-grapth'
-let bindSessionResource
+let bindSessionResource, bindControlResource, bindOutputResource, bindOutputBodyResource
 Remote({ resources: { session: ({ sessionId }) => sessionId } })(undefined, {
   kind: 'method', name: 'status', addInitializer: callback => { bindSessionResource = callback },
+})
+Remote({ resources: { session: ({ sessionId }) => sessionId } })(undefined, {
+  kind: 'method', name: 'control', addInitializer: callback => { bindControlResource = callback },
+})
+Remote({ resources: { session: ({ sessionId }) => sessionId } })(undefined, {
+  kind: 'method', name: 'output', addInitializer: callback => { bindOutputResource = callback },
+})
+Remote({ resources: { session: ({ sessionId }) => sessionId } })(undefined, {
+  kind: 'method', name: 'outputBody', addInitializer: callback => { bindOutputBodyResource = callback },
 })
 const guidance = 'For work the user asks to track in a transaction graph, read the program-generated revision and choices before creating or resuming it. One leaf may be active. Begin must commit before work starts. Pending or UNKNOWN work blocks finish and dependent work. Never replay blindly. Complete requires a qualified successful tool result after begin. Incomplete requires known failure, confirmed non-execution, or an unsatisfied outcome. Wait for the enclosing tool call to finish and read the committed state before continuing. Containers aggregate. Transaction completion does not complete Goal.'
 
@@ -23,6 +35,9 @@ export default class TransactionGraphPlugin extends TypertRemoteService {
   constructor(ctx, config = {}) {
     super(ctx, 'transactionGraph', { namespace: 'transactionGraphView' })
     bindSessionResource.call(this)
+    bindControlResource.call(this)
+    bindOutputResource.call(this)
+    bindOutputBodyResource.call(this)
     if (!config || typeof config !== 'object' || Array.isArray(config)
         || Object.keys(config).some(key => !['projectRoot', 'storageRelative', 'enableSwitch'].includes(key)))
       throw new Error('Invalid transaction graph configuration')
@@ -30,6 +45,7 @@ export default class TransactionGraphPlugin extends TypertRemoteService {
     this.workflows = new WorkflowRegistry(ctx)
     this.sessionPolicies = new SessionPolicies()
     this.host.allowClassic = agent => this.sessionPolicies.allowClassic(agent)
+    installGraphCommand(ctx, this.host, this.sessionPolicies)
     Object.defineProperty(this, 'workflowContract', { value: WORKFLOW_CONTRACT })
     Object.defineProperty(this, 'extensionContract', { value: EXTENSION_CONTRACT })
     ctx.sessionProjections.register(projection)
@@ -64,14 +80,41 @@ export default class TransactionGraphPlugin extends TypertRemoteService {
     })
     ctx.effect(() => () => { this.workflows.close(); this.sessionPolicies.close(); return this.host.close() })
   }
-  async status({ sessionId }, signal) {
+  async status(request, signal) {
+    const { sessionId } = request
     signal?.throwIfAborted()
     const controller = this.ctx.get('sessionController')
     if (!controller) throw new RemoteError('session/not-found', 'Session controller unavailable', { sessionId })
     const result = await controller.resolveAgent(sessionId)
     if (result.error) throw result.error
     signal?.throwIfAborted()
-    return this.host.snapshot(result.agent.session)
+    const execution = this.workflows.executionView(result.agent)
+    const snapshot = { ...this.host.snapshot(result.agent.session), ...(execution ? { execution } : {}) }
+    if (snapshot.status !== 'empty') return snapshot
+    try {
+      const source = this.workflows.graphView(result.agent)
+      return source ? { ...snapshot, status: 'ready', graph: formatGraphView(source.display, source.plan) } : snapshot
+    } catch {
+      return { ...snapshot, status: 'unavailable' }
+    }
+  }
+  async output(request, signal) {
+    signal?.throwIfAborted()
+    const controller = this.ctx.get('sessionController')
+    if (!controller) throw new RemoteError('session/not-found', 'Session controller unavailable', { sessionId: request.sessionId })
+    const result = await controller.resolveAgent(request.sessionId)
+    if (result.error) throw result.error
+    return { sessionId: request.sessionId, workflowId: request.workflowId, ...await this.workflows.executionOutput(result.agent, request, signal) }
+  }
+  async outputBody(request, signal) { return this.output(request, signal) }
+  async control(request, signal) {
+    signal?.throwIfAborted()
+    const controller = this.ctx.get('sessionController')
+    if (!controller) throw new RemoteError('session/not-found', 'Session controller unavailable', { sessionId: request.sessionId })
+    const result = await controller.resolveAgent(request.sessionId)
+    if (result.error) throw result.error
+    await this.workflows.controlExecution(result.agent, request, signal)
+    return this.status({ sessionId: request.sessionId }, signal)
   }
   registerRecoveryVerifier(adapter) { return this.host.registerRecoveryVerifier(adapter) }
   recoverInterrupted(agent, request) { return this.host.recoverInterrupted(agent, request) }

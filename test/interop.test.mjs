@@ -43,3 +43,29 @@ test('workflow snapshots cannot advertise a graph revision without the actual va
   f.registry.register({ ...f.adapter, read: () => ({ revision: 5, graph: null }) })
   assert.throws(() => f.registry.read(f.agent, { kind: f.adapter.kind, workflowId: f.adapter.workflowId }), /WORKFLOW_INVALID_SNAPSHOT/)
 })
+
+test('a graph view requires the exact authorized controller within the project', t => {
+  const f = fixture(t)
+  const graph = { revision: 1 }
+  let reads = 0
+  const dispose = f.registry.register({ ...f.adapter, authorize: agent => agent === f.agent,
+    readGraphView: () => { reads++; return graph } })
+  assert.equal(f.registry.graphView({ ...f.agent }), null)
+  assert.equal(reads, 0)
+  assert.equal(f.registry.graphView(f.agent), graph)
+  assert.equal(reads, 1)
+  f.registry.ctx.workingDirectory.get = () => path.dirname(f.root)
+  assert.equal(f.registry.graphView(f.agent), null)
+  f.registry.ctx.workingDirectory.get = () => f.root
+  dispose()
+  assert.equal(f.registry.graphView(f.agent), null)
+  assert.equal(reads, 1)
+})
+
+test('competing providers do not select a graph by registration order', t => {
+  const f = fixture(t)
+  const readGraphView = () => { assert.fail('an ambiguous provider must not be read') }
+  f.registry.register({ ...f.adapter, readGraphView })
+  f.registry.register({ ...f.adapter, workflowId: 'fixture-two', readGraphView })
+  assert.throws(() => f.registry.graphView(f.agent), /WORKFLOW_GRAPH_VIEW_AMBIGUOUS/)
+})
