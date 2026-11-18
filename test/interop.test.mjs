@@ -9,7 +9,7 @@ function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-interop-port-')))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const session = { header: { cwd: root } }, agent = { id: 'controller', session }
-  const registry = new WorkflowRegistry({ agents: { get: () => agent }, sessions: { get: () => session }, workingDirectory: { get: () => root } })
+  const registry = new WorkflowRegistry({ agents: { get: () => agent }, sessions: { get: () => session }, workingDirectory: { get: () => root }, get(name) { return this[name] } })
   t.after(() => registry.close())
   return { root, registry, agent, adapter: { contract: WORKFLOW_CONTRACT, version: 1, kind: 'fixture', workflowId: 'fixture-one', projectRoot: root,
     operations: ['submit'], authorize: () => true, read: () => ({ revision: 0, graph: null }), execute: async () => ({ accepted: true }) } }
@@ -42,4 +42,30 @@ test('workflow snapshots cannot advertise a graph revision without the actual va
   const f = fixture(t)
   f.registry.register({ ...f.adapter, read: () => ({ revision: 5, graph: null }) })
   assert.throws(() => f.registry.read(f.agent, { kind: f.adapter.kind, workflowId: f.adapter.workflowId }), /WORKFLOW_INVALID_SNAPSHOT/)
+})
+
+test('a graph view requires the exact authorized controller within the project', t => {
+  const f = fixture(t)
+  const graph = { revision: 1 }
+  let reads = 0
+  const dispose = f.registry.register({ ...f.adapter, authorize: agent => agent === f.agent,
+    readGraphView: () => { reads++; return graph } })
+  assert.equal(f.registry.graphView({ ...f.agent }), null)
+  assert.equal(reads, 0)
+  assert.equal(f.registry.graphView(f.agent), graph)
+  assert.equal(reads, 1)
+  f.registry.ctx.workingDirectory.get = () => path.dirname(f.root)
+  assert.equal(f.registry.graphView(f.agent), null)
+  f.registry.ctx.workingDirectory.get = () => f.root
+  dispose()
+  assert.equal(f.registry.graphView(f.agent), null)
+  assert.equal(reads, 1)
+})
+
+test('competing providers do not select a graph by registration order', t => {
+  const f = fixture(t)
+  const readGraphView = () => { assert.fail('an ambiguous provider must not be read') }
+  f.registry.register({ ...f.adapter, readGraphView })
+  f.registry.register({ ...f.adapter, workflowId: 'fixture-two', readGraphView })
+  assert.throws(() => f.registry.graphView(f.agent), /WORKFLOW_GRAPH_VIEW_AMBIGUOUS/)
 })
