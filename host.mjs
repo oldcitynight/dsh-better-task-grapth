@@ -43,7 +43,7 @@ function referenceSeq(reference, sessionId) {
 export function artifactProof(projectRoot, ref, signal, { maxBytes = ARTIFACT_MAX_BYTES } = {}) {
   if (!ref.sha256) fail('ARTIFACT_SHA_REQUIRED')
   const identity = readArtifactIdentity(projectRoot, ref, signal, { maxBytes })
-  if (identity.sha256 !== ref.sha256) fail('ARTIFACT_CHANGED_OR_HASH_MISMATCH')
+  if (identity.sha256 !== ref.sha256) fail('ARTIFACT_CHANGED_OR_HASH_MISMATCH', { path: '/sha256', item: ref.ref, reason: 'The declared SHA-256 differs from current file bytes.', expected: ref.sha256, observed: identity.sha256, repair: 'Check the existing evidence and the intended file identity; do not fabricate a hash or silently change the acceptance criterion.' })
   return identity
 }
 /** Observation of a historically verified deliverable, never current acceptance. */
@@ -58,7 +58,8 @@ export function artifactCurrentIdentity(projectRoot, ref, signal, options) {
     return { ref: ref.ref, acceptedSha256: ref.sha256, currentSha256: null, status: 'MISSING' }
   }
 }
-function readArtifactIdentity(projectRoot, ref, signal, { maxBytes = ARTIFACT_MAX_BYTES } = {}) {
+/** Host-only current-byte identity, without an asserted prior hash or acceptance. */
+export function readArtifactIdentity(projectRoot, ref, signal, { maxBytes = ARTIFACT_MAX_BYTES } = {}) {
   if (maxBytes !== null && (!Number.isSafeInteger(maxBytes) || maxBytes < 1)) fail('ARTIFACT_BYTE_POLICY_INVALID')
   const requested = path.isAbsolute(ref.ref) ? ref.ref : path.resolve(projectRoot, ref.ref)
   const file = realProjectPath(projectRoot, requested, { directory: false })
@@ -105,6 +106,27 @@ export function resolveEvidence({ references, state, binding, activeProof, outco
   }
   if (outcome === 'complete' && successfulAfterBegin < 1) fail('COMPLETE_REQUIRES_ACTUAL_SUCCESSFUL_TOOL_EVIDENCE')
   return result
+}
+
+export function formatGraphView(display, plan, pending = null) {
+  const parents = new Map(plan.nodes.map(node => [node.id, node.parent]))
+  const blocked = new Set(display.pendingButBlocked.filter(node => node.unmetPrerequisites.length).map(node => node.id))
+  const choices = rows => pending ? [] : rows.map(({ id, choice }) => ({ id, choice }))
+  const terminals = new Set(plan.nodes.map(node => node.terminal).filter(Boolean))
+  return { revision: display.revision, title: display.graph.title,
+    ...(plan.hierarchy ? { hierarchy: { ...copy(plan.hierarchy), focusScopeId: display.focusScopeId ?? display.hierarchy.pending?.scopeId
+      ?? parents.get(display.active?.nodeId ?? display.legalNext[0]?.id) ?? plan.nodes.find(node => node.parent === null).id,
+      pending: copy(display.hierarchy.pending), complete: display.goalReached } } : {}),
+    nodes: display.nodes.map(({ id, label, kind, status, disposition, branchState, selectedBranch, terminal, acceptance, gate }) => ({
+      id, label, kind, status, parent: parents.get(id), ...(disposition === undefined ? {} : { disposition }),
+      ...(terminal ? { terminal, acceptance, gate } : {}), ...(terminals.has(id) ? { isTerminal: true } : {}),
+      ...(blocked.has(id) && !display.legalNext.some(node => node.id === id) ? { blocked: true } : {}),
+      ...(branchState ? { branchState } : {}), ...(selectedBranch ? { selectedBranch } : {}),
+    })),
+    edges: plan.edges.map(({ from, to, kind, outcome, case: selectedCase }) => ({ from, to, kind,
+      ...(outcome === undefined ? {} : { outcome }), ...(selectedCase === undefined ? {} : { case: selectedCase }) })),
+    active: display.active ? { nodeId: display.active.nodeId, recoveryRequired: display.active.recoveryRequired } : null,
+    pending, legalNext: choices(display.legalNext), skipChoices: choices(display.skipChoices) }
 }
 
 export class DshTransactionHost {
@@ -184,22 +206,9 @@ export class DshTransactionHost {
       }
       const { saved } = this.journal(session, { readOnly: true })
       if (!saved.document) return { ...base, status: 'empty' }
-      const display = view(saved.document, this.owner), plan = saved.document.state.plan
-      const parents = new Map(plan.nodes.map(node => [node.id, node.parent]))
-      const blocked = new Set(display.pendingButBlocked.filter(node => node.unmetPrerequisites.length).map(node => node.id))
       const pending = saved.pending ? { operation: saved.pending.operation,
         qualification: projected.intents.find(row => row.data.operationId === saved.pending.operationId)?.status ?? 'UNKNOWN' } : null
-      const choices = rows => pending ? [] : rows.map(({ id, choice }) => ({ id, choice }))
-      return { ...base, status: 'ready', graph: { revision: display.revision, title: display.graph.title,
-        nodes: display.nodes.map(({ id, label, kind, status, disposition, branchState, selectedBranch }) => ({
-          id, label, kind, status, parent: parents.get(id), ...(disposition === undefined ? {} : { disposition }),
-          ...(blocked.has(id) ? { blocked: true } : {}),
-          ...(branchState ? { branchState } : {}), ...(selectedBranch ? { selectedBranch } : {}),
-        })),
-        edges: plan.edges.map(({ from, to, kind, outcome, case: selectedCase }) => ({ from, to, kind,
-          ...(outcome === undefined ? {} : { outcome }), ...(selectedCase === undefined ? {} : { case: selectedCase }) })),
-        active: display.active ? { nodeId: display.active.nodeId, recoveryRequired: display.active.recoveryRequired } : null,
-        pending, legalNext: choices(display.legalNext), skipChoices: choices(display.skipChoices) } }
+      return { ...base, status: 'ready', graph: formatGraphView(view(saved.document, this.owner), saved.document.state.plan, pending) }
     } catch { return { ...base, status: 'unavailable' } }
   }
   presence(session) {
