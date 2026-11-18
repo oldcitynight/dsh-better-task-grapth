@@ -1,3 +1,7 @@
+# 0.3.1-rc.67
+
+- 支持分组与分层终审、终点门控、暂停与恢复，并在会话中展示工作进度。
+
 # 0.3.1-rc.47
 
 - npm 包、Bundle 名称和 GitHub 仓库更名为 `dsh-better-task-grapth`。
