@@ -1,6 +1,6 @@
 {
   "name": "dsh-better-task-grapth",
-  "version": "0.3.1-rc.58",
+  "version": "0.3.1-rc.68",
   "description": "Transactional task graphs with a conversation panel for DeepSeek Harness",
   "license": "GPL-3.0-only",
   "keywords": [
@@ -26,7 +26,9 @@
     "./host": "./host.mjs",
     "./interop": "./interop.mjs",
     "./client": "./client.js",
-    "./extensions": "./extensions.mjs"
+    "./extensions": "./extensions.mjs",
+    "./validation": "./validation.mjs",
+    "./hierarchy": "./hierarchy.mjs"
   },
   "files": [
     "client.js",
@@ -45,21 +47,27 @@
     "view-model.mjs",
     "work-policy.mjs",
     "extensions.mjs",
+    "commands.mjs",
     "VALIDATION.md",
-    "session-records.mjs",
-    "DSH-COMPATIBILITY.json"
+    "DSH-COMPATIBILITY.json",
+    "validation.mjs",
+    "scripts/release-docs.mjs",
+    "hierarchy.mjs",
+    "session-records.mjs"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
     "dsh": "0.1.7-rc.2"
   },
   "scripts": {
-    "build": "node scripts/build-client.mjs",
+    "build": "npm run docs:check && node scripts/build-client.mjs",
     "check": "node scripts/build-client.mjs --check",
-    "test": "npm run check && node --test",
+    "test": "npm run docs:check && npm run check && node --test",
     "prepack": "npm run build",
     "prepublishOnly": "npm test",
-    "pack:bundle": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\" && npm pack --pack-destination dist"
+    "pack:bundle": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\" && npm pack --pack-destination dist",
+    "docs:sync": "node scripts/release-docs.mjs --write",
+    "docs:check": "node scripts/release-docs.mjs --check"
   },
   "publishConfig": {
     "access": "public",
@@ -70,6 +78,7 @@
     "zod": "4.6.7"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "0.1.7-rc.2",
     "@deepseek-ai/dsh-session": "0.1.7-rc.2",
     "@deepseek-ai/dsh-tools": "0.1.7-rc.2",
     "@deepseek-ai/dsh-typert-protocol": "0.1.7-rc.2"
