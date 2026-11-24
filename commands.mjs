@@ -21,6 +21,7 @@ export function installGraphCommand(ctx, host, policies) {
         const presence = host.presence(agent.session)
         if (!['PRESENT', 'NEVER_CREATED'].includes(presence.state))
           return { kind: 'error', text: `任务图状态为 ${presence.state}，请先处理待提交记录或恢复历史图；本指令不会重建或重放。` }
+        host.journal(agent.session, { start: true })
         agent.steer(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text:
           `请使用任务图处理${rawInput.trim() ? '以下任务：\n' + rawInput.trim() : '当前任务。'}\n这是通过 /task-graph 主动提出的要求，不受任务规模判断限制。先读取已有图；无图时规划任务图，不用原生清单替代。已有图时沿用其进度，不重新创建。仍遵守当前规划模式和具体操作权限；只有用户实际要求暂停或等候时才停在相应边界，不推定本指令要求等待批准。若尚无具体任务，先询问任务内容。` }] }))
         return { kind: 'success', text: '已向当前 Agent 提交任务图要求，沿用独立任务图流程。' }

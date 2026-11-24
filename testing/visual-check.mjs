@@ -6,7 +6,7 @@ import http from 'node:http'
 import assert from 'node:assert/strict'
 import {pathToFileURL,fileURLToPath} from 'node:url'
 import {visualCases} from './visual-fixtures.mjs'
-import {checkInteractions} from './visual-interactions.mjs'
+import {checkInteractions,prepareUnitInsertion} from './visual-interactions.mjs'
 
 const packageRoot=path.resolve(fileURLToPath(new URL('..',import.meta.url)))
 const workspace=process.cwd(), deps=path.resolve(process.env.DSH_UI_TEST_DEPS??'.tmp/task-graph-visual-20261115/node_modules')
@@ -32,7 +32,8 @@ try{
   env:{...process.env,TMPDIR:'/tmp'},args:['--no-sandbox']})
  const extraCases=[{id:'english-mobile',fixture:'pending',width:390,height:844,theme:'light',surface:'viewer',lang:'en'},
   {id:'small-panel',fixture:'join',width:260,height:640,theme:'dark',surface:'panel'},
-  {id:'join-large',fixture:'join',width:1920,height:1080,theme:'dark',surface:'viewer'}]
+  {id:'join-large',fixture:'join',width:1920,height:1080,theme:'dark',surface:'viewer'},
+  {id:'unit-insertion',fixture:'join',width:740,height:900,theme:'light',surface:'panel'}]
  for(const row of [...visualCases,...extraCases].filter(row=>!process.env.DSH_UI_TEST_CASES||process.env.DSH_UI_TEST_CASES.split(',').includes(row.id))){
   const context=await browser.newContext({viewport:{width:row.width,height:row.height},locale:'zh-CN',colorScheme:row.theme,reducedMotion:'reduce'})
   const page=await context.newPage(), errors=[]
@@ -41,6 +42,7 @@ try{
   const outside=[]
   page.on('request',req=>{if(!req.url().startsWith(`http://127.0.0.1:${server.address().port}/`))outside.push(req.url())})
   try{
+   const revisedGraph = row.id === 'unit-insertion' ? await prepareUnitInsertion(page) : undefined
    await page.goto(`http://127.0.0.1:${server.address().port}/?case=${row.fixture}&theme=${row.theme}&lang=${row.lang??'zh'}`)
    await page.locator('.tg-dock').waitFor()
    if(row.surface==='viewer')await page.locator('.tg-top button[aria-haspopup="dialog"]').click()
@@ -71,7 +73,7 @@ try{
     assert.deepEqual(metrics.offscreenControls,[],'controls stay inside the viewport')
     if(metrics.canvas)assert.ok(metrics.canvas.height>=150,'small screens retain a usable graph canvas')
    }
-   const interactions=baseline?[]:await checkInteractions(page,row,output)
+   const interactions=baseline?[]:await checkInteractions(page,row,output,revisedGraph)
    assert.deepEqual(errors,[]);assert.deepEqual(outside,[])
    if(row.surface==='viewer')assert.equal(metrics.wires,metrics.expectedWires,'every reduced edge is in the SVG')
    results.push({...row,metrics,interactions,errors,externalRequests:outside})
