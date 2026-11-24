@@ -72,7 +72,7 @@ export class WorkflowRegistry {
     return result
   }
   read(agent, reference) { return this.snapshot(this.entry(reference, agent)) }
-  graphView(agent) {
+  graphView(agent, readScope) {
     const providers = []
     for (const entry of this.entries.values()) {
       if (!entry.readGraphView) continue
@@ -80,7 +80,7 @@ export class WorkflowRegistry {
       providers.push(entry)
     }
     if (providers.length > 1) fail('WORKFLOW_GRAPH_VIEW_AMBIGUOUS')
-    return providers[0]?.readGraphView() ?? null
+    return providers[0]?.readGraphView(readScope) ?? null
   }
   executionProvider(agent) {
     const providers = [...this.entries.values()].filter(entry => {
@@ -90,7 +90,7 @@ export class WorkflowRegistry {
     if (providers.length > 1) fail('WORKFLOW_EXECUTION_VIEW_AMBIGUOUS')
     return providers[0]
   }
-  executionView(agent) { return copy(this.executionProvider(agent)?.readExecutionView() ?? null) }
+  executionView(agent, readScope) { return copy(this.executionProvider(agent)?.readExecutionView(readScope) ?? null) }
   async executionOutput(agent, request, signal) {
     const entry = this.executionProvider(agent)
     if (!entry || entry.workflowId !== request.workflowId || !entry.readExecutionOutput) fail('WORKFLOW_EXECUTION_OUTPUT_UNAVAILABLE')

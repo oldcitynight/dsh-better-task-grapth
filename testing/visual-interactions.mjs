@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { TransactionGraph } from '../core.mjs'
+import { MemoryGraphStore } from '../store.mjs'
+import { base, commitRevision, inserted, screen } from './unit-order-fixture.mjs'
 
 const settle = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 const snapshot = page => page.evaluate(() => {
@@ -15,8 +18,34 @@ async function cardVisible(page, id) {
   }, id)
 }
 
-export async function checkInteractions(page, row, output) {
+export async function prepareUnitInsertion(page) {
+  const graph = new TransactionGraph(new MemoryGraphStore())
+  graph.create({ operationId: 'create', definition: base() })
+  await page.addInitScript(snapshot => { window.visualInitialGraph = snapshot }, screen(graph))
+  commitRevision(graph, inserted())
+  return screen(graph)
+}
+
+export async function checkInteractions(page, row, output, revisedGraph) {
   const checks = []
+  if (row.id === 'unit-insertion') {
+    const tree = page.locator('.tg-tree .tg-node-name')
+    const toggle = page.locator('.tg-header')
+    assert.deepEqual(await tree.allTextContents(), ['root', 'a', 'c', 'd', 'end'])
+    await toggle.click()
+    await page.evaluate(snapshot => window.visual.setGraph(snapshot), revisedGraph)
+    await tree.filter({ hasText: /^b$/ }).waitFor({ state: 'attached', timeout: 10000 })
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false')
+    await toggle.click()
+    const expected = ['a', 'b', 'c', 'd', 'end']
+    assert.deepEqual(await tree.allTextContents(), ['root', ...expected])
+    await page.locator('.tg-top button[aria-haspopup=dialog]').click()
+    await page.locator('.tg-canvas-stage[data-view=level]').waitFor()
+    assert.deepEqual(await page.locator('.tg-task-select option:not([disabled])').allTextContents(),
+      expected.map((label, index) => (index + 1) + '. ' + label))
+    assert.deepEqual(await page.locator('.tg-card-title').allTextContents(), expected)
+    return ['collapsed dock receives revised positions', 'level selector and cards follow the same sequence']
+  }
   if (row.surface !== 'viewer') {
     if (row.id === 'nested-panel') {
       assert.equal(await page.evaluate(() => {
