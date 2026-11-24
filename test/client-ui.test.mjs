@@ -5,6 +5,7 @@ import vm from 'node:vm'
 import { z } from 'zod'
 import { createRemoteContribution } from '../remote.mjs'
 import { branchLayout, graphPresentation } from '../view-model.mjs'
+import { TOOL_NAMES } from '../tools.mjs'
 
 const graph = {
   revision: 4, title: 'Publish', active: { nodeId: 'inspect', recoveryRequired: true }, pending: null,
@@ -153,15 +154,17 @@ test('generated bundle registers the graph in the existing session composer dock
       plugin = row.factory(name => ({ react: {}, zod: { z } })[name])
     } } },
   })
-  let scope, endpoint, entry
+  let scope, endpoint, entry, toolDisplay, language = 'zh'
+  const dictionaries = new Map()
+  const toolKeys = []
   const callbacks = []
   const ctx = {
     effect(callback) { callbacks.push(callback) },
+    provide(id, value) { assert.equal(id, 'transactionGraphToolDisplay'); toolDisplay = value },
     locale: { register(namespace, locales) {
-      assert.equal(namespace, 'projectTransactionGraph')
-      assert.equal(locales.zh.title, '事务图')
-      assert.equal(locales.en.title, 'Transaction graph')
-    } },
+      dictionaries.set(namespace, locales)
+      return () => dictionaries.delete(namespace)
+    }, bind(namespace) { return id => dictionaries.get(namespace)[language][id] } },
     remote: {
       transactionGraphView: { status() { throw new Error('UI mount must not read before a session renders') } },
       async $mount(contribution) { endpoint = contribution.descriptors[0]; return () => {} },
@@ -171,12 +174,35 @@ test('generated bundle registers the graph in the existing session composer dock
       callback(this)
     },
     slots: {
-      inject(name, callback) { assert.equal(name, 'conversation.input.dock'); callback() },
-      register(spec, component) { entry = spec; assert.equal(typeof component, 'function') },
+      inject(name, callback) {
+        if (name === 'tool.call.toolview') return [...callback()]
+        assert.equal(name, 'conversation.input.dock'); callback()
+      },
+      register(spec, component) {
+        if (spec.name === 'tool.call.toolview') toolKeys.push(spec.key)
+        else entry = spec
+        assert.equal(typeof component, 'function')
+      },
     },
   }
   await plugin.apply(ctx)
   callbacks[0]()
+  assert.equal(dictionaries.get('projectTransactionGraph').zh.title, '事务图')
+  assert.equal(dictionaries.get('projectTransactionGraph').en.title, 'Transaction graph')
+  const unregister = callbacks[1]()
+  assert.deepEqual(new Set(toolKeys), new Set(TOOL_NAMES))
+  const names = dictionaries.get('transactionGraph.tools')
+  for (const id of TOOL_NAMES) {
+    assert.match(names.zh[id], /\p{Script=Han}/u)
+    assert.match(names.en[id], /[a-z]/i)
+    assert.notEqual(names.en[id], id)
+  }
+  assert.equal(toolDisplay.label('transaction_graph_read'), '读取事务图')
+  language = 'en'
+  assert.equal(toolDisplay.label('transaction_graph_read'), 'Read transaction graph')
+  assert.equal(toolDisplay.label('unregistered.Tool-1'), 'unregistered.Tool-1')
+  unregister()
+  assert.equal(toolDisplay.label('transaction_graph_read'), 'transaction_graph_read')
   assert.deepEqual(scope, ['remote.transactionGraphView'])
   assert.equal(endpoint.namespace, 'transactionGraphView')
   assert.equal(entry.id, 'project-transaction-graph')
@@ -194,7 +220,7 @@ test('empty polling and quick initial reads stay hidden; slow reads and failures
   vm.runInNewContext(source, { window: { __ModuleLoader__: { load(row) {
     plugin = row.factory(name => ({ react: React, zod: { z } })[name])
   } } } })
-  const ctx = { effect() {}, remote: { transactionGraphView: {}, async $mount() { return () => {} } },
+  const ctx = { effect() {}, provide() {}, remote: { transactionGraphView: {}, async $mount() { return () => {} } },
     inject(_deps, callback) { callback(this) }, slots: { inject(_name, callback) { callback() }, register(_spec, component) { Dock = component } } }
   await plugin.apply(ctx)
   const render = (value, access = true, open = true) => {

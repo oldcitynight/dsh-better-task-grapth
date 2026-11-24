@@ -8,7 +8,7 @@ function fixture() {
   const messages = [], agent = { id: 'root', session: {}, steer: message => messages.push(message) }
   const ctx = { agents: { get: () => agent, roots: () => [agent] },
     inject: (_names, setup) => setup({ commands: { register: value => { definition = value } } }) }
-  const host = { inProject: () => true, presence: () => ({ state: 'NEVER_CREATED' }) }
+  const host = { journal: () => {}, inProject: () => true, presence: () => ({ state: 'NEVER_CREATED' }) }
   const policies = new SessionPolicies()
   installGraphCommand(ctx, host, policies)
   const invoke = rawInput => definition.handler({ agent, rawInput, commandId: 'cmd-1', signal: new AbortController().signal })
