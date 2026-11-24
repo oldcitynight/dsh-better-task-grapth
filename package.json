@@ -1,6 +1,10 @@
 {
   "name": "dsh-better-task-grapth",
-  "version": "0.3.1-rc.67",
+  "version": "0.3.2-rc.8",
+  "workflowCompatibilityEpoch": 1,
+  "os": [
+    "linux"
+  ],
   "description": "Transactional task graphs with a conversation panel for DeepSeek Harness",
   "license": "GPL-3.0-only",
   "keywords": [
@@ -28,11 +32,16 @@
     "./client": "./client.js",
     "./extensions": "./extensions.mjs",
     "./validation": "./validation.mjs",
-    "./hierarchy": "./hierarchy.mjs"
+    "./hierarchy": "./hierarchy.mjs",
+    "./rules": "./rules.mjs",
+    "./settings-form": "./settings-form.mjs",
+    "./workflow-limits": "./workflow-limits.mjs",
+    "./workflow-compatibility": "./workflow-compatibility.mjs"
   },
   "files": [
     "client.js",
     "client.source.mjs",
+    "settings-form.mjs",
     "cordis.patch.yml",
     "core.mjs",
     "host.mjs",
@@ -44,6 +53,8 @@
     "scripts/build-client.mjs",
     "store.mjs",
     "tools.mjs",
+    "tool-display.mjs",
+    "unit-order.mjs",
     "view-model.mjs",
     "work-policy.mjs",
     "extensions.mjs",
@@ -53,6 +64,11 @@
     "validation.mjs",
     "scripts/release-docs.mjs",
     "hierarchy.mjs",
+    "rules.mjs",
+    "workflow-limits.json",
+    "workflow-limits.mjs",
+    "workflow-compatibility.mjs",
+    "docs/UNIT_WORKFLOW_20261123.html",
     "session-records.mjs"
   ],
   "engines": {
@@ -75,9 +91,11 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "semver": "7.8.6",
     "zod": "4.6.7"
   },
   "peerDependencies": {
+    "@deepseek-ai/schemastery": "3.18.5",
     "@deepseek-ai/dsh-llm": "0.2.0-rc.2 || 0.2.0-rc.1",
     "@deepseek-ai/dsh-session": "0.2.0-rc.2 || 0.2.0-rc.1",
     "@deepseek-ai/dsh-tools": "0.2.0-rc.2 || 0.2.0-rc.1",
