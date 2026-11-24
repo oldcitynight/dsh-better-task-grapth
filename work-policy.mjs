@@ -11,7 +11,7 @@ export const administrative = name => protocolNames.has(name)
 export function ownedExecutionChain(exec, running) {
   const rows = [...running], ancestors = new Set(), callIds = new Set()
   let cursor = exec
-  for (let depth = 0; depth <= 32; depth++) {
+  while (true) {
     const exact = rows.filter(row => row.token === cursor.token && row.callId === cursor.callId)
     if (!cursor.token || exact.length !== 1 || exact[0].agent !== exec.agent || exact[0].rootCallId !== exec.rootCallId
         || ancestors.has(cursor.token)) fail('OWNED_EXECUTION_ANCESTRY_UNAVAILABLE')
@@ -25,7 +25,6 @@ export function ownedExecutionChain(exec, running) {
     if (parent.length !== 1) fail('OWNED_EXECUTION_PARENT_MISSING_OR_DUPLICATE')
     cursor = parent[0]
   }
-  fail('OWNED_EXECUTION_DEPTH_LIMIT')
 }
 
 export function unresolvedWork(state, activeProof, excludedCallIds = new Set()) {

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { GraphError, LIMITS, canonical, copy, validateDocument } from './core.mjs'
+import { createHash, randomUUID } from 'node:crypto'
+import { GraphError, canonical, copy, validateDocument } from './core.mjs'
 
 const reject = (code, message = code) => { throw new GraphError(code, message) }
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino
@@ -20,14 +20,14 @@ function syncDirectory(directory) {
   const fd = fs.openSync(directory, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY)
   try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
 }
-function regularBoundedJson(file, maximum = LIMITS.bytes) {
+function regularBytes(file) {
   let fd
   try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW) }
   catch (error) { if (error.code === 'ENOENT') return null; throw error }
   try {
     const before = fs.fstatSync(fd)
-    if (!before.isFile() || maximum !== null && before.size > maximum || before.size < 1) reject('INVALID_STORE_FILE')
-    const buffer = Buffer.alloc(maximum === null ? before.size + 1 : Math.min(before.size + 1, maximum + 1))
+    if (!before.isFile() || before.size < 1) reject('INVALID_STORE_FILE')
+    const buffer = Buffer.alloc(before.size + 1)
     let count = 0
     while (count < buffer.length) {
       const read = fs.readSync(fd, buffer, count, buffer.length - count, null)
@@ -37,8 +37,12 @@ function regularBoundedJson(file, maximum = LIMITS.bytes) {
     const after = fs.fstatSync(fd)
     if (!sameFile(before, after) || count !== before.size || after.size !== count || before.mtimeMs !== after.mtimeMs)
       reject('STORE_CHANGED_DURING_READ')
-    return JSON.parse(buffer.subarray(0, count).toString('utf8'))
+    return buffer.subarray(0, count)
   } finally { fs.closeSync(fd) }
+}
+function regularJson(file) {
+  const bytes = regularBytes(file)
+  return bytes && JSON.parse(bytes.toString('utf8'))
 }
 
 export class MemoryGraphStore {
@@ -58,12 +62,14 @@ export class MemoryGraphStore {
 // All components below projectRoot must be real directories, never symlinks.
 // This is application path validation, not isolation from a hostile same-user OS.
 export class FileGraphStore {
-  constructor({ projectRoot, directory, fileName = 'transaction-graph.json', maximumBytes = LIMITS.bytes,
-    validator = validateDocument, updateValidator = checkNext, readOnly = false }) {
-    if (!/^[a-z][a-z0-9.-]{0,63}$/.test(fileName) || maximumBytes !== null && (!Number.isSafeInteger(maximumBytes)
-        || maximumBytes < 1 || maximumBytes > 12 * 1024 * 1024) || typeof validator !== 'function' || typeof updateValidator !== 'function') reject('INVALID_STORE_POLICY')
-    this.maximumBytes = maximumBytes; this.validator = validator; this.updateValidator = updateValidator
+  #validatedRead = null
+  constructor({ projectRoot, directory, fileName = 'transaction-graph.json',
+    codec, validator = validateDocument, updateValidator = checkNext, readOnly = false, reuseValidatedReads = false }) {
+    if (!/^[a-z][a-z0-9.-]{0,63}$/.test(fileName) || typeof validator !== 'function' || typeof updateValidator !== 'function') reject('INVALID_STORE_POLICY')
+    this.validator = validator; this.updateValidator = updateValidator
+    this.codec = codec
     this.readOnly = readOnly
+    this.reuseValidatedReads = reuseValidatedReads
     if (typeof projectRoot !== 'string' || typeof directory !== 'string'
         || !path.isAbsolute(projectRoot) || !path.isAbsolute(directory)) reject('EXPLICIT_ABSOLUTE_STORE_ROOT_REQUIRED')
     this.projectRoot = path.resolve(projectRoot)
@@ -102,12 +108,32 @@ export class FileGraphStore {
   }
   read() {
     this.checkDirectory()
-    const document = regularBoundedJson(this.file, this.maximumBytes)
+    const bytes = regularBytes(this.file)
     this.checkDirectory()
-    if (document) this.validator(document)
+    if (!bytes) { this.#validatedRead = null; return null }
+    const stored = JSON.parse(bytes.toString('utf8'))
+    const document = this.codec ? this.codec.decode(stored) : stored
+    if (document) {
+      // Only content-dependent validators may opt in. Always read the current
+      // bytes through the secure store, and never return a shared parsed object.
+      const hash = this.reuseValidatedReads ? createHash('sha256').update(bytes).digest('hex') : null
+      if (!hash || this.#validatedRead?.hash !== hash || this.#validatedRead.validator !== this.validator) {
+        this.validator(document)
+        this.#validatedRead = hash ? { hash, validator: this.validator } : null
+      }
+    }
     return document
   }
   compareAndSwap(expectedRevision, update) {
+    return this.#commit(expectedRevision, update)
+  }
+  // An extension can durably prepare its own commit record after the generic
+  // compare-and-swap has checked both the candidate and its transition.
+  compareAndSwapPrepared(expectedRevision, update, prepare) {
+    if (typeof prepare !== 'function') reject('INVALID_STORE_COMMIT_PREPARATION')
+    return this.#commit(expectedRevision, update, prepare)
+  }
+  #commit(expectedRevision, update, prepare) {
     if (this.readOnly) reject('READ_ONLY_TRANSACTION_STORE')
     this.checkDirectory()
     try { fs.mkdirSync(this.lock, { mode: 0o700 }) }
@@ -125,13 +151,13 @@ export class FileGraphStore {
       if (next && typeof next.then === 'function') reject('ASYNC_STORE_UPDATE_FORBIDDEN')
       this.validator(next)
       this.updateValidator(previous, next)
-      const content = JSON.stringify(next) + '\n'
-      if (this.maximumBytes !== null && Buffer.byteLength(content) > this.maximumBytes) reject('STORE_BYTE_LIMIT')
+      const content = JSON.stringify(this.codec ? this.codec.encode(next) : next) + '\n'
+      if (prepare && prepare(copy(previous), copy(next))?.then) reject('ASYNC_STORE_COMMIT_PREPARATION')
       temporary = path.join(this.directory, '.transaction-graph-' + randomUUID() + '.tmp')
       const fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600)
       try { temporaryIdentity = fs.fstatSync(fd); fs.writeFileSync(fd, content); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
       this.checkDirectory()
-      if (!sameFile(lockIdentity, fs.lstatSync(this.lock)) || regularBoundedJson(ownerFile)?.token !== token) reject('LOCK_OWNERSHIP_CHANGED')
+      if (!sameFile(lockIdentity, fs.lstatSync(this.lock)) || regularJson(ownerFile)?.token !== token) reject('LOCK_OWNERSHIP_CHANGED')
       // One rename commits plan, state and events together; no separate stale snapshot.
       fs.renameSync(temporary, this.file); temporary = null
       syncDirectory(this.directory)
@@ -142,7 +168,7 @@ export class FileGraphStore {
         catch (error) { if (error.code !== 'ENOENT') throw error }
       }
       // Never recursively remove a lock or infer that a previous owner is dead.
-      if (!sameFile(lockIdentity, fs.lstatSync(this.lock)) || (ownerWritten && regularBoundedJson(ownerFile)?.token !== token))
+      if (!sameFile(lockIdentity, fs.lstatSync(this.lock)) || (ownerWritten && regularJson(ownerFile)?.token !== token))
         reject('LOCK_OWNERSHIP_CHANGED')
       if (ownerWritten) fs.unlinkSync(ownerFile)
       fs.rmdirSync(this.lock)

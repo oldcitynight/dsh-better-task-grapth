@@ -23,35 +23,38 @@ export function createRemoteContribution(z) {
     canPause: z.boolean(), canResume: z.boolean(),
     activity: z.object({ stage: z.string().max(128), kind: z.enum(['model', 'tool', 'result', 'boundary']),
       sessionId: id.nullable(), step: z.number().int().nonnegative(), tool: z.string().max(128).nullable(),
+      taskId: id.optional(), taskLabel: z.string().min(1).max(512).optional(),
       at: z.string().max(64) }).strict().nullable(),
   }).strict()
   const node = z.object({
-    id, label: z.string().min(1).max(512), kind: z.enum(['container', 'leaf']),
+    id, label: z.string().min(1), kind: z.enum(['unit', 'container', 'leaf']), mode: z.enum(['direct', 'planned']).optional(),
     parent: id.nullable(),
     status: z.enum(['COMPLETE', 'CONTAINER_INCOMPLETE', 'ACTIVE', 'INACTIVE', 'INCOMPLETE', 'PENDING', 'SKIPPED']),
-    terminal: id.optional(), isTerminal: z.literal(true).optional(), acceptance: z.string().min(1).max(8000).optional(),
+    terminal: id.optional(), isTerminal: z.literal(true).optional(), acceptance: z.string().min(1).optional(),
     gate: z.enum(['GROUP_REVIEW', 'PLAN_REVIEW', 'GRAPH_UPDATE', 'GRAPH_AUDIT', 'PAUSE_REVIEW', 'WAITING_USER', 'BLOCKAGE']).nullable().optional(),
+    ruleState:z.enum(['READY','WAITING','ACTIVE','PASS','FAILED','BLOCK']).optional(), ruleText:z.array(z.string()).optional(),
     blocked: z.literal(true).optional(),
     disposition: z.enum(['COMPLETED', 'SKIPPED_NOT_RUN', 'UNSATISFIED', 'FAILED']).optional(),
     branchState: z.enum(['SELECTED', 'WAITING', 'NOT_SELECTED']).optional(),
     selectedBranch: z.object({
-      outcome: z.enum(['complete', 'incomplete']), case: z.string().min(1).max(64).optional(), targetId: id.optional(),
+      outcome: z.enum(['complete', 'incomplete', 'blocked']), case: z.string().min(1).optional(), targetId: id.optional(),
     }).strict().optional(),
   }).strict()
   const edge = z.discriminatedUnion('kind', [
+    z.object({ from: id, to: id, kind: z.literal('rule'), reference: z.enum(['PENDING', 'MATCH', 'MISS', 'MIXED']).optional() }).strict(),
     z.object({ from: id, to: id, kind: z.literal('prerequisite') }).strict(),
-    z.object({ from: id, to: id, kind: z.literal('route'), outcome: z.enum(['complete', 'incomplete']) }).strict(),
-    z.object({ from: id, to: id, kind: z.literal('case'), case: z.string().min(1).max(64) }).strict(),
+    z.object({ from: id, to: id, kind: z.literal('route'), outcome: z.enum(['complete', 'incomplete', 'blocked']) }).strict(),
+    z.object({ from: id, to: id, kind: z.literal('case'), case: z.string().min(1) }).strict(),
   ])
-  const choice = z.object({ id, choice: z.number().int().min(0).max(127) }).strict()
+  const choice = z.object({ id, choice: z.number().int().min(0) }).strict()
   const graph = z.object({
-    hierarchy: z.object({ version: z.literal(1), maxGroupDepth: z.number().int().min(1).max(16), focusScopeId: id, complete: z.boolean(),
-      pending: z.object({ kind: z.enum(['GROUP_REVIEW','PLAN_REVIEW']), scopeId: id, subjectId: id }).strict().nullable() }).strict().optional(),
-    revision: z.number().int().min(1).max(1024), title: z.string().min(1).max(512),
-    nodes: z.array(node).min(2).max(128), edges: z.array(edge).max(512),
+    hierarchy: z.object({ version: z.number().int().min(1).max(2), maxGroupDepth: z.number().int().positive().optional(), maxDepth: z.number().int().nonnegative().optional(), focusScopeId: id, complete: z.boolean(),
+      pending: z.object({ kind: z.enum(['GROUP_REVIEW','PLAN_REVIEW']), scopeId: id, subjectId: id }).strict().nullable() }).strict().refine(value => value.version === 2 ? value.maxDepth !== undefined || value.maxGroupDepth !== undefined : value.maxGroupDepth !== undefined).optional(),
+    revision: z.number().int().min(1), title: z.string().min(1),
+    nodes: z.array(node).min(1), edges: z.array(edge),
     active: z.object({ nodeId: id, recoveryRequired: z.boolean() }).strict().nullable(),
-    pending: z.object({ operation: z.string().min(1).max(64), qualification: z.string().min(1).max(128) }).strict().nullable(),
-    legalNext: z.array(choice).max(128), skipChoices: z.array(choice).max(128),
+    pending: z.object({ operation: z.string().min(1), qualification: z.string().min(1) }).strict().nullable(),
+    legalNext: z.array(choice), skipChoices: z.array(choice),
   }).strict()
   const output = z.discriminatedUnion('status', [
     z.object({ sessionId: id, status: z.literal('ready'), graph, execution: execution.nullable().optional() }).strict(),
