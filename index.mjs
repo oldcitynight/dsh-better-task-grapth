@@ -13,8 +13,33 @@ import { WorkflowRegistry, WORKFLOW_CONTRACT } from './interop.mjs'
 import { EXTENSION_CONTRACT, SessionPolicies } from './extensions.mjs'
 import { FileGraphStore } from './store.mjs'
 import { installGraphCommand } from './commands.mjs'
+import Schema from '@deepseek-ai/schemastery'
+import { defaultWorkflowLimits, resolveWorkflowLimits } from './workflow-limits.mjs'
+import path from 'node:path'
+import fs from 'node:fs'
 
 export const name = 'dsh-better-task-grapth'
+export const Config = Schema.object({
+  projectRoot: Schema.string().volatile(),
+  storageRelative: Schema.string().default('.dsh/transaction-graphs-v4').volatile(),
+  enableSwitch: Schema.boolean().default(false).volatile(),
+  workflowLimits: Schema.object(Object.fromEntries(Object.entries(defaultWorkflowLimits).map(([key, value]) =>
+    [key, Schema.number().step(1).min(key === 'maxUnits' ? 1 : 0).default(value)]))).default({}).volatile(),
+})
+Object.defineProperty(Config, '~standard', { get: () => ({ version: 1, vendor: 'schemastery', validate(input = {}) {
+  try {
+    if (Object.keys(input).some(key => !Object.hasOwn(Config.dict, key))) throw Error('Invalid transaction graph configuration')
+    if (input.workflowLimits !== undefined) resolveWorkflowLimits(input.workflowLimits)
+    const fields = Config(input)
+    const projectRoot = fields.projectRoot.get(), storageRelative = fields.storageRelative.get()
+    if (projectRoot !== undefined && (!path.isAbsolute(projectRoot) || fs.realpathSync(projectRoot) !== path.resolve(projectRoot)
+        || !fs.lstatSync(projectRoot).isDirectory())) throw Error('EXPLICIT_REAL_PROJECT_REQUIRED')
+    if (!storageRelative || path.isAbsolute(storageRelative) || storageRelative.split(/[\\/]/).some(x => !x || x === '..' || x === '.'))
+      throw Error('INVALID_STORAGE_RELATIVE_PATH')
+    return { value: { projectRoot, storageRelative, enableSwitch: fields.enableSwitch.get(), workflowLimits: fields.workflowLimits } }
+  } catch (error) { return { issues: [{ message: error.message }] } }
+} }) })
+
 let bindSessionResource, bindControlResource, bindOutputResource, bindOutputBodyResource
 Remote({ resources: { session: ({ sessionId }) => sessionId } })(undefined, {
   kind: 'method', name: 'status', addInitializer: callback => { bindSessionResource = callback },
@@ -31,6 +56,7 @@ Remote({ resources: { session: ({ sessionId }) => sessionId } })(undefined, {
 const guidance = 'For work the user asks to track in a transaction graph, read the program-generated revision and choices before creating or resuming it. One leaf may be active. Begin must commit before work starts. Pending or UNKNOWN work blocks finish and dependent work. Never replay blindly. Complete requires a qualified successful tool result after begin. Incomplete requires known failure, confirmed non-execution, or an unsatisfied outcome. Wait for the enclosing tool call to finish and read the committed state before continuing. Containers aggregate. Transaction completion does not complete Goal.'
 
 export default class TransactionGraphPlugin extends TypertRemoteService {
+  static Config = Config
   static inject = ['agents', 'sessions', 'sessionProjections', 'sessionPersistence', 'workingDirectory', 'tools', 'systemPrompt']
   constructor(ctx, config = {}) {
     super(ctx, 'transactionGraph', { namespace: 'transactionGraphView' })
@@ -39,7 +65,7 @@ export default class TransactionGraphPlugin extends TypertRemoteService {
     bindOutputResource.call(this)
     bindOutputBodyResource.call(this)
     if (!config || typeof config !== 'object' || Array.isArray(config)
-        || Object.keys(config).some(key => !['projectRoot', 'storageRelative', 'enableSwitch'].includes(key)))
+        || Object.keys(config).some(key => !['projectRoot', 'storageRelative', 'enableSwitch', 'workflowLimits'].includes(key)))
       throw new Error('Invalid transaction graph configuration')
     this.host = new DshTransactionHost(ctx, { ...config, appendPluginRecord })
     this.workflows = new WorkflowRegistry(ctx)
@@ -87,11 +113,12 @@ export default class TransactionGraphPlugin extends TypertRemoteService {
     const result = await controller.resolveAgent(sessionId)
     if (result.error) throw result.error
     signal?.throwIfAborted()
-    const execution = this.workflows.executionView(result.agent)
+    const readScope = new Map()
+    const execution = this.workflows.executionView(result.agent, readScope)
     const snapshot = { ...this.host.snapshot(result.agent.session), ...(execution ? { execution } : {}) }
     if (snapshot.status !== 'empty') return snapshot
     try {
-      const source = this.workflows.graphView(result.agent)
+      const source = this.workflows.graphView(result.agent, readScope)
       return source ? { ...snapshot, status: 'ready', graph: formatGraphView(source.display, source.plan) } : snapshot
     } catch {
       return { ...snapshot, status: 'unavailable' }
