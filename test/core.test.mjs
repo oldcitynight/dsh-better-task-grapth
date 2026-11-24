@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { TransactionGraph, GraphError, LIMITS, normalizePlan, documentOf, validateDocument, digest, copy } from '../core.mjs'
+import { TransactionGraph, GraphError, normalizePlan, documentOf, validateDocument, digest, copy } from '../core.mjs'
 import { MemoryGraphStore } from '../store.mjs'
 
 const ids = () => { let n = 0; return prefix => `${prefix}_${++n}` }
@@ -250,10 +250,10 @@ test('async recovery cannot overwrite concurrent normal finish or absorb mutated
   await assert.rejects(pending, code('CAS_CONFLICT'))
   assert.equal(store.read().events.at(-1).operationId, 'normal_finish')
 })
-test('switch is off by default, requires explicit one of at most eight declared cases', () => {
+test('switch is off by default, requires explicit a declared case when enabled', () => {
   const plan = definition([{ kind: 'case', from: 'a', to: 'b', case: 'yes' }, { kind: 'case', from: 'a', to: 'c', case: 'no' }])
   plan.nodes.find(row => row.key === 'a').switchCases = ['yes', 'no']
-  assert.throws(() => fixture(plan), code('SWITCH_DISABLED_OR_LIMIT'))
+  assert.throws(() => fixture(plan), code('INVALID_SWITCH_CASES'))
   const { graph } = fixture(plan, { enableSwitch: true })
   begin(graph, 'a')
   assert.deepEqual(graph.read().active.caseChoices.map(row => row.label), ['yes', 'no'])
@@ -266,7 +266,8 @@ test('switch is off by default, requires explicit one of at most eight declared 
   begin(graph, 'b', 'begin_b'); finish(graph, 'complete', 'finish_b')
   assert.equal(graph.read().nodes.find(node => node.key === 'root').status, 'COMPLETE')
   plan.nodes.find(row => row.key === 'a').switchCases = Array.from({ length: 9 }, (_, i) => 'case' + i)
-  assert.throws(() => fixture(plan, { enableSwitch: true }), code('SWITCH_DISABLED_OR_LIMIT'))
+  plan.edges = []
+  assert.equal(normalizePlan(plan, { enableSwitch: true }).nodes.find(n => n.key === 'a').switchCases.length, 9)
 })
 test('containment, prerequisite and conditional route cycles are rejected including mixed container completion cycle', () => {
   const containment = definition(); containment.nodes[1].kind = 'container'; containment.nodes[1].parent = 'b'; containment.nodes[2].kind = 'container'; containment.nodes[2].parent = 'a'
@@ -288,16 +289,17 @@ test('illegal edges, duplicates, same-source incomplete prerequisite and empty c
   const duplicate = { kind: 'prerequisite', from: 'a', to: 'b' }
   assert.throws(() => fixture(definition([duplicate, duplicate])), code('DUPLICATE_EDGE'))
 })
-test('128 nodes, total512 edges and depth16 are program bounds', () => {
+test('unit count and depth follow policy; former node, edge and nesting bounds are crossed', () => {
   const many = definition(); many.nodes = [many.nodes[0], ...Array.from({ length: 128 }, (_, i) => ({ key: 'leaf' + i, kind: 'leaf', label: 'Leaf', parent: 'root' }))]
-  assert.throws(() => fixture(many), code('NODE_LIMIT'))
+  assert.equal(normalizePlan(many).nodes.length, 129)
+  assert.throws(() => normalizePlan(many, { workflowLimits: { maxUnits: 128 } }), code('UNIT_LIMIT'))
   const depth = definition(); depth.nodes = [depth.nodes[0]]
   for (let i = 1; i < 17; i++) depth.nodes.push({ key: 'node' + i, kind: i === 16 ? 'leaf' : 'container', label: 'Level', parent: i === 1 ? 'root' : 'node' + (i - 1) })
-  assert.throws(() => fixture(depth), code('DEPTH_LIMIT'))
+  assert.equal(normalizePlan(depth).nodes.length, 17)
+  assert.throws(() => normalizePlan(depth, { workflowLimits: { maxDepth: 15 } }), code('DEPTH_LIMIT'))
   const edges = definition(); edges.nodes = [edges.nodes[0], ...Array.from({ length: 40 }, (_, i) => ({ key: 'leaf' + i, kind: 'leaf', label: 'Leaf', parent: 'root' }))]; edges.edges = []
   for (let i = 0; i < 40 && edges.edges.length < 500; i++) for (let j = i + 1; j < 40 && edges.edges.length < 500; j++) edges.edges.push({ kind: 'prerequisite', from: 'leaf' + i, to: 'leaf' + j })
-  assert.throws(() => fixture(edges), code('TOTAL_EDGE_LIMIT'))
-  assert.equal(LIMITS.nodes, 128); assert.equal(LIMITS.edges, 512); assert.equal(LIMITS.depth, 16)
+  assert.equal(normalizePlan(edges).edges.length, 500)
 })
 test('snapshot tampering is rejected even if its outer checksum is recomputed', () => {
   const { store } = fixture(); const document = store.read()

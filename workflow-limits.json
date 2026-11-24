@@ -1,0 +1,6 @@
+{
+  "maxUnits": 512,
+  "maxDepth": 32,
+  "preloadBytes": 10240,
+  "dynamicMaterialBytes": 65536
+}

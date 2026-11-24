@@ -16,6 +16,10 @@ keyboard dialog return, pause/resume, group collapse and task search through the
 fake RPC. Desktop defaults to expanded groups; narrow screens retain level view.
 Exact case, interaction and screenshot counts are recorded in each run's results.
 
+The `unit-insertion` case feeds the dock two revisions from the transaction graph
+and checks that a background refresh while folded puts a new unit between its
+predecessor and successor in the outline, level selector and cards.
+
 Use disposable dependencies, outside the installed DSH profile:
 
 ```sh
