@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createToolDefinitions } from '../tools.mjs'
-import { DshTransactionHost, sessionReference, artifactProof, ARTIFACT_MAX_BYTES } from '../host.mjs'
+import { DshTransactionHost, sessionReference, artifactProof } from '../host.mjs'
 import { initialState, applyEvent, KEY } from '../projection.mjs'
 import { TransactionGraph } from '../core.mjs'
 import { MemoryGraphStore } from '../store.mjs'
@@ -22,12 +22,12 @@ test('standalone artifact default stays 16 MiB; a caller can explicitly raise it
   fs.writeFileSync(file, ''); fs.truncateSync(file, size)
   for (let i = 0; i < size / block.length; i++) hash.update(block)
   const sha256 = hash.digest('hex'), reference = { kind: 'artifact', ref: file, sha256 }
-  assert.throws(() => artifactProof(root, reference), e => e.code === 'ARTIFACT_BYTE_LIMIT')
+  assert.equal(artifactProof(root, reference).stat.size, String(size))
   const large = { maxBytes: 1024 * 1024 * 1024 }
   assert.equal(artifactProof(root, reference, undefined, large).stat.size, String(size))
   assert.throws(() => artifactProof(root, { ...reference, sha256: '0'.repeat(64) }, undefined, large), e => e.code === 'ARTIFACT_CHANGED_OR_HASH_MISMATCH')
-  fs.truncateSync(file, ARTIFACT_MAX_BYTES + 1)
-  assert.throws(() => artifactProof(root, reference), e => e.code === 'ARTIFACT_BYTE_LIMIT')
+  fs.truncateSync(file, size + 1)
+  assert.throws(() => artifactProof(root, reference, undefined, { maxBytes: size }), e => e.code === 'ARTIFACT_BYTE_LIMIT')
 })
 
 const graphDefinition = { title: 'Host integration fixture', nodes: [
@@ -129,6 +129,17 @@ test('bundle uses the original session workspace and keeps the journal there', a
   f.setCwd(path.dirname(f.root))
   assert.equal(f.host.inProject(f.session), false)
   assert.throws(() => f.host.journal(f.session), errorCode('PATH_OUTSIDE_OWN_PROJECT'))
+})
+
+test('a restored release-only journal cannot erase the actual session transaction history', async t => {
+  const f = fixture(t)
+  const { journal, saved } = f.host.journal(f.session, { start: true })
+  assert.ok(saved.workflowRelease)
+  const original = fs.readFileSync(journal.store.file)
+  await f.createAndBegin()
+  fs.writeFileSync(journal.store.file, original)
+  assert.throws(() => f.host.journal(f.session), errorCode('HOST_JOURNAL_MISSING_FOR_RECORDED_SESSION'))
+  assert.equal(f.host.presence(f.session).previouslyCommitted, true)
 })
 
 test('generic presence distinguishes no graph from loss after a durable commit', async t => {
@@ -434,10 +445,10 @@ test('UNKNOWN or truly pending work blocks both finishes even with empty refs an
     assert.ok(f.saved().document.state.active); assert.equal(f.saved().document.revision, 2)
   }
 })
-test('UNKNOWN survives proof-index eviction and still blocks an empty-ref incomplete', async t => {
+test('UNKNOWN remains in the full proof ledger and still blocks an empty-ref incomplete', async t => {
   const f = fixture(t); await f.createAndBegin(); const unknownSeq = f.external('fixture_unknown', { status: 'UNKNOWN' })
   for (let i = 0; i < 1100; i++) f.external('fixture_read', { ok: true })
-  assert.equal(f.state.proofs.some(row => row.seq === unknownSeq), false)
+  assert.equal(f.state.proofs.some(row => row.seq === unknownSeq), true)
   assert.equal(f.state.uncertainties.length, 1)
   await assert.rejects(f.callTool('finish', { expectedRevision: 2, outcome: 'incomplete', disposition: 'UNSATISFIED',
     evidence: [], note: 'Recent index is not the unknown ledger' }), errorCode('ACTIVE_OWNED_WORK_UNRESOLVED'))

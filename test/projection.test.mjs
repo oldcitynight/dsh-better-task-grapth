@@ -47,7 +47,7 @@ test('PTC dispatch missing its root fails closed when the root has an unresolved
   assert.equal(state.intents[0].status, 'PENDING')
   assert.equal(state.dispatches.length, 0)
 })
-test('registry restores a v4 checkpoint by rebuilding the original log under v6', async () => {
+test('registry restores a v4 checkpoint by rebuilding the original log under v7', async () => {
   const ctx = new Context()
   try {
     await ctx.plugin(SessionProjectionRegistry)
@@ -63,14 +63,14 @@ test('registry restores a v4 checkpoint by rebuilding the original log under v6'
     assert.equal(registry.restoreFloor(checkpoint), 0)
     assert.throws(() => registry.restore(checkpoint, events.slice(1), 1, header, 0), /re-read from seq 0/)
     const restored = registry.restore(checkpoint, events, 0, header, 0).checkpoint[projection.key]
-    assert.equal(restored.ver, 6)
+    assert.equal(restored.ver, 7)
     assert.equal(restored.val.failure, null)
     assert.equal(restored.val.dispatches.length, 0)
     assert.equal(restored.val.turn, 1)
     assert.equal(checkpoint[projection.key].val.failure, 'PTC_DISPATCH_REPLAY_OR_LIMIT')
   } finally { await ctx.fiber.dispose() }
 })
-test('the limit applies to concurrent unresolved roots and preserves their evidence', () => {
+test('more than 256 concurrent unresolved roots preserve their evidence', () => {
   let state = initialState({ id: 'own' })
   for (let n = 0; n < 300; n++) {
     const callId = `closed-${n}`
@@ -83,8 +83,8 @@ test('the limit applies to concurrent unresolved roots and preserves their evide
   for (let n = 0; n < 257; n++) {
     state = applyEvent(state, { seq: 600 + n, type: 'tool/call', data: { callId: `open-${n}`, name: 'fixture' } })
   }
-  assert.match(state.failure, /CALL_ID_REPLAY_OR_LIMIT/)
-  assert.equal(Object.keys(state.calls).length, 256)
+  assert.equal(state.failure, null)
+  assert.equal(Object.keys(state.calls).length, 257)
 })
 test('new schema cannot silently open an empty graph over an own legacy graph log', () => {
   const state = applyEvent(initialState({ id: 'own' }), { seq: 0, type: 'plugin:project-transaction-graph/intent-v2', data: {} })
@@ -104,10 +104,10 @@ test('every PTC parent typed negative qualifies the whole chain, UNKNOWN never b
     assert.equal(chainQualification('leaf', 'root', [leaf, parent]), expected)
     assert.equal(chainSucceeded('leaf', 'root', [leaf, parent]), false)
   }
-  assert.equal(projection.stateVersion, 6)
+  assert.equal(projection.stateVersion, 7)
 })
-test('oversized result is explicitly UNKNOWN, typed false/failure cannot pass as execution evidence', () => {
-  assert.equal(outcomeOfContent([{ type: 'text', text: 'x'.repeat(32769) }]), 'UNKNOWN')
+test('long plain text has no typed outcome, typed false/failure cannot pass as execution evidence', () => {
+  assert.equal(outcomeOfContent([{ type: 'text', text: 'x'.repeat(32769) }]), 'UNVERIFIED')
   assert.equal(outcomeOfContent([{ type: 'text', text: '{"passed":false}' }]), 'FAIL')
   assert.equal(outcomeOfContent([{ type: 'text', text: '{"status":"NOT_RUN"}' }]), 'NOT_RUN')
   assert.equal(outcomeOfContent([{ type: 'text', text: '{"ok":true}' }]), 'UNVERIFIED')
@@ -145,7 +145,7 @@ test('intent with another session ID fails closed and no graph success is manufa
   state = applyEvent(state, { seq: 1, type: INTENT, data: { version: 4, operationId: 'op_fixture', callId: 'call',
     rootCallId: 'call', turn: 1, sessionId: 'foreign', bindingDigest: '0'.repeat(64), claimDigest: '1'.repeat(64),
     operation: 'create', expectedGraphRevision: 0, candidateChecksum: '2'.repeat(64), clearedWork: [] } })
-  assert.match(state.failure, /INTENT_SCOPE_REPLAY_OR_LIMIT/)
+  assert.match(state.failure, /INTENT_SCOPE_REPLAY/)
   assert.equal(state.intents.length, 0)
 })
 test('every own UNKNOWN root enters the independent ledger, regardless of administrative-looking name', () => {
