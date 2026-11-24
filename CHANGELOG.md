@@ -1,20 +1,25 @@
-# 0.3.1-rc.61
+# 0.3.2-rc.2
+
+- 单元工作流 v2，Linux 与 WSL，工作流兼容周期 1。全新版本基数从 rc.0 重新编号。
+- 本包与官方 Timeline 不兼容。包内新增离线 HTML 运行图谱、逐角色上下文、工具名单和联动指南。
+
+# 0.3.1-rc.62
 
 - 支持分组与分层终审、终点门控、暂停与恢复，并在会话中展示工作进度。
 
-# 0.3.1-rc.41
+# 0.3.1-rc.42
+
+- Generic located validation feedback and syntax normalization; host-only readArtifactIdentity export. Standalone task-graph behavior and the 16 MiB default artifact policy remain unchanged.
+- Keep published version history below unchanged; this local work has not been published.
+
+# 0.3.1-rc.42
 
 - npm 包、Bundle 名称和 GitHub 仓库更名为 `dsh-better-task-grapth`。
 
-# 0.3.1-rc.31 — DSH compatibility line
+# 0.3.1-rc.32 — DSH compatibility line
 
-- Pin this build to its listed DSH releases and pair it with the other plugin on RC slot 1.
+- Pin this build to its listed DSH releases and pair it with the other plugin on RC slot 2.
 - Use the native Session plugin record API.
-
-# 0.3.0-rc.12 — DSH 0.2.2-rc.1 compatibility (2026-11-14)
-
-- Pin DSH peers and Node requirements to the host branch and rebuild the Web client.
-- Preserve standalone task graph tools and the workflow extension contract.
 
 # 0.3.0-rc.11 — independent base and generic extension ports (2026-11-13)
 

@@ -1,26 +1,30 @@
 // SPDX-License-Identifier: GPL-3.0-only
+import { expandedUnit, directUnit } from './view-model.mjs'
+import { createWorkflowToolDisplay, graphToolNames } from './tool-display.mjs'
+import { installConfigCard, configField, unitLimitFields } from './settings-form.mjs'
 // Loaded in the existing DSH browser seat, without a separate React root.
-export function createClientPlugin(React, z, createRemoteContribution, graphPresentation, branchLayout) {
+export function createClientPlugin(React, z, createRemoteContribution, graphPresentation, branchLayout, primitives) {
   const { createElement: h, useEffect, useId, useMemo, useRef, useState } = React
+  const toolDisplay = createWorkflowToolDisplay(React, primitives)
   const locale = {
     zh: {
-      title: '事务图', progress: '任务成功 {done}/{total}', active: '当前事务', ready: '可开始', noReady: '暂无可开始事务',
+      title: '事务图', progress: '任务成功 {done}/{total}', unitProgress: '单元通过 {done}/{total}', active: '当前事务', ready: '可开始', noReady: '暂无可开始事务',
       retry: '刷新', loading: '正在读取事务图…', unavailable: '暂时无法读取事务图', stale: '显示上次读取的状态', recovering: '当前事务等待恢复对账',
       pending: '状态更新待对账', waiting: '暂时没有可执行步骤，等待当前状态核对',
       tree: '事务层级', details: '事务关系', incoming: '进入条件：', conditionSeparator: '：',
       noEdges: '无进入条件',
-      complete: '完成', inProgress: '执行中', pendingNode: '待执行', inactive: '分支尚未激活', incomplete: '未完成',
+      rulePass: '通过', ruleWait: '等待前序任务', complete: '完成', inProgress: '执行中', pendingNode: '待执行', inactive: '分支尚未激活', incomplete: '未完成',
       branchWaiting: '等待分支选择', branchExcluded: '未选分支', branchChosen: '已选路径', graphComplete: '选中路径已完成',
       skipped: '跳过，未执行', failed: '失败', blocked: '受阻', unsatisfied: '未满足', grouped: '组内尚有未完成',
       fullscreen: '全屏', exitFullscreen: '退出全屏', branchGraph: '事务分支图',
-      prerequisiteMet: '前置已满足', edgeWaiting: '等待条件',
+      prerequisiteMet: '前置已满足', edgeWaiting: '等待条件', ruleMixed: '部分条件命中',
       additionalPrerequisites: '另有 {count} 项前置',
-      scopeLevel: '当前层', enterGroup: '进入分组', parentGroup: '返回上层', terminal: '终点', groupReview: '组级终审', scopeReview: '本层计划复查', dispositionReady: '处置报告已提交', group_audit: '组级终审', scope_plan: '本层计划复查', scope_update: '本层蓝图更新', scope_audit: '修改审计', scope_blockage: '分层阻塞处理', scope_pause: '中断审核', task_reporter: '任务报告',
+      scopeLevel: '当前层', enterGroup: '进入分组', parentGroup: '返回上层', terminal: '终点', groupReview: '组级终审', scopeReview: '本层计划复查', dispositionReady: '处置报告已提交', group_audit: '组级终审', unit_planner: '单元规划', unit_rebaseline: '单元重基线', unit_plan_audit: '规划审计', unit_audit: '单元终审', scope_plan: '本层计划复查', scope_update: '本层蓝图更新', scope_audit: '修改审计', scope_blockage: '分层阻塞处理', scope_pause: '中断审核', task_reporter: '任务报告',
       expandedView: '展开分组', levelView: '逐层查看', graphView: '显示方式', collapseGroup: '折叠 {name}', expandGroup: '展开 {name}', focusGroup: '聚焦 {name}', expandAll: '全部展开', collapseAll: '折叠分组', groupTasks: '{count} 个任务', groupFlow: '组间关系从上到下 · 组内任务从左到右',
       fitGraph: '全图', actualSize: '100%', zoomIn: '放大', zoomOut: '缩小', zoomLevel: '缩放比例', locateTask: '定位任务',
       locateHelp: '以原始大小查看所选任务；未选择时定位当前任务', findTask: '查找任务', selectTask: '选择任务…',
-      canvasCount: '{nodes} 个节点 · {edges} 条关系', selectedTask: '所选任务', entryCount: '{count} 项进入条件', taskCard: '任务', groupCard: '分组',
-      requires: '前置完成后', onComplete: '完成时', onIncomplete: '未完成时', onCase: '分支 {value}',
+      canvasCount: '{nodes} 个节点 · {edges} 条关系', selectedTask: '所选任务', entryCount: '{count} 项进入条件', unitCard: '单元', taskCard: '任务', groupCard: '分组',
+      ruleCondition:'前序判定', requires: '前置完成后', result_work: '成果返工', anyOutcome: '任一匹配即可', onBlocked: '组终审受阻时', onComplete: '完成时', onIncomplete: '未完成时', onCase: '分支 {value}',
       totalIncomplete: '{count} 项未完成', totalSkipped: '{count} 项跳过', totalInactive: '{count} 项分支未激活',
       totalExcluded: '{count} 项属于未选分支',
       revision: '版本 {revision}',
@@ -32,29 +36,29 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
       resumeHelp: '正常暂停继续下一步；意外中断根据保存的请求与工具记录恢复。',
       workflowWaiting: '等待用户选择或原生 Plan 模式解除', workflowComplete: '任务图流程已结束',
       workflowBlocked: '需要核对保存状态', workflowIdle: '流程待继续',
-      PREPLANNING: '预规划', EXECUTING: '叶任务', result_check: '结果验收', result_repair: '报告补正',
+      PREPLANNING: '预规划', EXECUTING: '单元执行', result_check: '结果验收', result_repair: '报告补正',
       plan_check: '计划复查', updater: '图更新', reviewer: '修改审计',
     },
     en: {
-      title: 'Transaction graph', progress: '{done}/{total} tasks successful', active: 'Current transaction', ready: 'Ready to start',
+      title: 'Transaction graph', progress: '{done}/{total} tasks successful', unitProgress: '{done}/{total} units passed', active: 'Current transaction', ready: 'Ready to start',
       noReady: 'No transaction ready to start', retry: 'Refresh', loading: 'Loading transaction graph…', unavailable: 'Transaction graph is unavailable', stale: 'Showing last known state',
       recovering: 'Current transaction awaits reconciliation', pending: 'Status update awaits reconciliation',
       waiting: 'Execution is on hold until the current state is reconciled',
       tree: 'Transaction hierarchy', details: 'Transaction relationships', incoming: 'Entry conditions:', conditionSeparator: ': ',
       noEdges: 'No entry conditions',
-      complete: 'Complete', inProgress: 'In progress', pendingNode: 'Pending', inactive: 'Branch not activated',
+      rulePass: 'Passed', ruleWait: 'Waiting for predecessors', complete: 'Complete', inProgress: 'In progress', pendingNode: 'Pending', inactive: 'Branch not activated',
       incomplete: 'Incomplete', skipped: 'Skipped', failed: 'Failed', blocked: 'Blocked', unsatisfied: 'Unsatisfied', grouped: 'Group incomplete',
       fullscreen: 'Full screen', exitFullscreen: 'Exit full screen', branchGraph: 'Transaction branch graph',
-      prerequisiteMet: 'Prerequisite met', edgeWaiting: 'Awaiting condition',
+      prerequisiteMet: 'Prerequisite met', edgeWaiting: 'Awaiting condition', ruleMixed: 'Some conditions match',
       additionalPrerequisites: '+{count} prerequisites',
       scopeLevel: 'Current level', enterGroup: 'Enter group', parentGroup: 'Parent group', terminal: 'Terminal', groupReview: 'Group final review', scopeReview: 'Scope plan review', dispositionReady: 'Disposition available', group_audit: 'Group final review', scope_plan: 'Scope plan review', scope_update: 'Scope update', scope_audit: 'Change audit', scope_blockage: 'Scoped blockage', scope_pause: 'Pause review', task_reporter: 'Task report',
       expandedView: 'Expanded groups', levelView: 'One level', graphView: 'View mode', collapseGroup: 'Collapse {name}', expandGroup: 'Expand {name}', focusGroup: 'Focus {name}', expandAll: 'Expand all', collapseAll: 'Collapse groups', groupTasks: '{count} tasks', groupFlow: 'Groups flow down · Tasks flow right',
       fitGraph: 'Fit graph', actualSize: '100%', zoomIn: 'Zoom in', zoomOut: 'Zoom out', zoomLevel: 'Zoom level', locateTask: 'Locate task',
       locateHelp: 'Show the selected task at actual size; otherwise locate the current task', findTask: 'Find task', selectTask: 'Select a task…',
-      canvasCount: '{nodes} nodes · {edges} edges', selectedTask: 'Selected task', entryCount: '{count} entry conditions', taskCard: 'Task', groupCard: 'Group',
+      canvasCount: '{nodes} nodes · {edges} edges', selectedTask: 'Selected task', entryCount: '{count} entry conditions', unitCard: 'Unit', taskCard: 'Task', groupCard: 'Group',
       branchWaiting: 'Awaiting branch selection', branchExcluded: 'Branch not selected',
       branchChosen: 'Selected path', graphComplete: 'Selected paths complete',
-      requires: 'After prerequisite', onComplete: 'On completion', onIncomplete: 'On incomplete', onCase: 'Case {value}',
+      ruleCondition:'Entry condition', requires: 'After prerequisite', result_work: 'Result rework', anyOutcome: 'Any matching outcome', onBlocked: 'On blocked group audit', onComplete: 'On completion', onIncomplete: 'On incomplete', onCase: 'Case {value}',
       totalIncomplete: '{count} incomplete', totalSkipped: '{count} skipped', totalInactive: '{count} inactive branches',
       totalExcluded: '{count} on unselected paths',
       revision: 'Revision {revision}',
@@ -66,7 +70,7 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
       resumeHelp: 'Continue after a normal pause, or recover an interruption using saved requests and tool receipts.',
       workflowWaiting: 'Waiting for user choice or native Plan mode', workflowComplete: 'Graph workflow ended',
       workflowBlocked: 'Saved state needs inspection', workflowIdle: 'Workflow awaiting continuation',
-      PREPLANNING: 'Planning', EXECUTING: 'Leaf task', result_check: 'Acceptance', result_repair: 'Report repair',
+      PREPLANNING: 'Planning', EXECUTING: 'Unit execution', result_check: 'Acceptance', result_repair: 'Report repair',
       plan_check: 'Plan review', updater: 'Graph update', reviewer: 'Change audit',
     },
   }
@@ -137,6 +141,7 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
     :is(.tg-wire,.tg-legend-mark)[data-state=branchChosen]{--tg-line:var(--tg-active);--tg-line-opacity:1}
     :is(.tg-wire,.tg-legend-mark)[data-state=prerequisiteMet]{--tg-line:var(--tg-complete);--tg-line-opacity:1}
     :is(.tg-wire,.tg-legend-mark)[data-state=blocked]{--tg-line:var(--tg-blocked);--tg-line-opacity:1}
+    :is(.tg-wire,.tg-legend-mark)[data-state=ruleMixed]{--tg-line:var(--tg-review);--tg-line-opacity:1}
     :is(.tg-wire,.tg-legend-mark)[data-state=branchExcluded]{--tg-line-opacity:.62}
     .tg-legend-mark{width:16px;border-top:2px solid var(--tg-line);opacity:var(--tg-line-opacity)}
     .tg-legend-mark[data-state=dispositionReady]{--tg-line:var(--tg-review);border-top-style:dashed}
@@ -181,7 +186,9 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
   const contribution = createRemoteContribution(z)
   const statusResult = contribution.descriptors[0].result.create()
   function nodeState(node) {
+    if (node.ruleState && !node.gate) return {PASS:'rulePass',FAILED:'failed',BLOCK:'blocked',WAITING:'ruleWait',ACTIVE:'inProgress',READY:'pendingNode'}[node.ruleState]
     if (node.gate) return { GROUP_REVIEW: 'groupReview', PLAN_REVIEW: 'scopeReview', GRAPH_UPDATE: 'scope_update', GRAPH_AUDIT: 'scope_audit', PAUSE_REVIEW: 'scope_pause', WAITING_USER: 'paused', BLOCKAGE: 'scope_blockage' }[node.gate]
+    if (expandedUnit(node) && node.selectedBranch?.outcome === 'blocked') return 'blocked'
     if (node.branchState === 'NOT_SELECTED') return 'branchExcluded'
     if (node.branchState === 'WAITING' && !node.disposition) return 'branchWaiting'
     return dispositions[node.disposition] ?? (node.blocked ? 'blocked' : statusLabels[node.status])
@@ -192,16 +199,19 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
   }
   function edgeText(edge, t) {
     if (edge.kind === 'prerequisite') return t('requires')
+    if (edge.kind === 'rule') return t('ruleCondition')
     if (edge.kind === 'case') return t('onCase', { value: edge.case })
-    return t(edge.outcome === 'complete' ? 'onComplete' : 'onIncomplete')
+    return t(edge.outcome === 'blocked' ? 'onBlocked' : edge.outcome === 'complete' ? 'onComplete' : 'onIncomplete')
   }
   function Conditions({ selected, conditions, entryEdges = [], t, onSelect }) {
     if (!selected) return null
     return h('section', { className: 'tg-area', 'aria-label': t('details') },
       h('h4', null, t('details')),
       h('div', { className: 'tg-current' }, h('strong', null, selected.label), badge(selected, t)),
+      selected.ruleText?.map((line,i)=>h('p',{key:i},line)),
       selected.acceptance && h('p', { className: 'tg-acceptance' }, selected.acceptance),
       h('h5', { className: 'tg-condition-heading' }, t('incoming')),
+      entryEdges.filter(edge => edge.kind === 'route').length > 1 && h('p', { className: 'tg-condition-kind' }, t('anyOutcome')),
       conditions.length ? h('ol', { className: 'tg-conditions' }, conditions.map(node =>
         h('li', { key: node.id },
           h('button', { type: 'button', className: 'tg-link-button', onClick: () => onSelect(node.id) }, node.label),
@@ -222,12 +232,12 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
       for (let parent = byId.get(id)?.parent; parent && !seen.has(parent); parent = byId.get(parent)?.parent) seen.add(parent)
       return seen
     }
-    const scope = graph.nodes.find(node => node.id === scopeId && node.kind === 'container')
+    const scope = graph.nodes.find(node => node.id === scopeId && expandedUnit(node))
       ?? graph.nodes.find(node => node.parent === null)
     const layout = useMemo(() => branchLayout(graph, scope?.id, { expandedGroups: expanded, collapsedIds }), [graph, scope?.id, expanded, collapsedIds])
     const groups = layout.groups ?? [], visibleItems = [...layout.cards, ...groups]
     useEffect(() => {
-      if (!expanded && graph.hierarchy && selected?.kind === 'leaf' && selected.parent !== scope?.id) {
+      if (!expanded && graph.hierarchy && directUnit(selected) && selected.parent && selected.parent !== scope?.id) {
         setScope(selected.parent); setZoom({ scale: 1, mode: 'initial' })
       }
       if (expanded && selected && !visibleItems.some(item => item.node.id === selected.id)) {
@@ -295,14 +305,14 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
           width: wire.labelWidth, height: 24 }, h('span', { xmlns: 'http://www.w3.org/1999/xhtml', className: 'tg-wire-label', title: label }, label)))
     })
     const cards = layout.cards.map(({ node, group, ordinal, x, y, width, height, additionalPrerequisites }) => {
-      const collapsible = expanded && node.kind === 'container'
+      const collapsible = expanded && expandedUnit(node)
       const card = h('button', {
       key: node.id, type: 'button', className: 'tg-card', 'data-state': nodeState(node),
       'data-node-id': node.id,
       'aria-pressed': selected?.id === node.id, 'aria-current': active?.id === node.id ? 'step' : undefined,
       style: collapsible ? undefined : { left: x, top: y, width: width ?? layout.cardWidth, height: height ?? layout.cardHeight },
-      onClick: () => onSelect(node.id), onDoubleClick: () => { if (graph.hierarchy && node.kind === 'container') enter(node.id) }, title: node.label,
-    }, h('span', { className: 'tg-card-group', title: group ?? undefined }, `${t(node.kind === 'container' ? 'groupCard' : 'taskCard')} ${String(ordinal).padStart(2, '0')}`, group && ` · ${group}`),
+      onClick: () => onSelect(node.id), onDoubleClick: () => { if (graph.hierarchy && expandedUnit(node)) enter(node.id) }, title: node.label,
+    }, h('span', { className: 'tg-card-group', title: group ?? undefined }, `${t(node.kind === 'unit' ? 'unitCard' : expandedUnit(node) ? 'groupCard' : 'taskCard')} ${String(ordinal).padStart(2, '0')}`, group && ` · ${group}`),
     h('strong', { className: 'tg-card-title' }, node.label),
     h('span', { className: 'tg-card-states' }, badge(node, t), node.isTerminal && h('span', { className: 'tg-badge' }, t('terminal')),
       additionalPrerequisites > 0 && h('span', { className: 'tg-badge' },
@@ -325,10 +335,10 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
           h('button', { key: value, type: 'button', className: 'tg-control', 'aria-pressed': mode === value, onClick: () => changeMode(value) }, t(value === 'expanded' ? 'expandedView' : 'levelView')))),
         expanded ? h(React.Fragment, null, h('span', { className: 'tg-group-hint' }, t('groupFlow')),
           h('button', { type: 'button', className: 'tg-control', onClick: () => { setCollapsed([]); setZoom({ scale: 1, mode: 'initial' }) } }, t('expandAll')),
-          h('button', { type: 'button', className: 'tg-control', onClick: () => { setCollapsed(graph.nodes.filter(node => node.kind === 'container' && node.parent).map(node => node.id)); setZoom({ scale: 1, mode: 'initial' }) } }, t('collapseAll')))
+          h('button', { type: 'button', className: 'tg-control', onClick: () => { setCollapsed(graph.nodes.filter(node => expandedUnit(node) && node.parent).map(node => node.id)); setZoom({ scale: 1, mode: 'initial' }) } }, t('collapseAll')))
           : h(React.Fragment, null, h('button', { type: 'button', className: 'tg-control', disabled: !scope.parent, onClick: () => enter(scope.parent) }, t('parentGroup')),
             h('strong', { title: scope.label }, scope.label), badge(scope, t),
-            selected?.kind === 'container' && selected.parent === scope.id && h('button', { type: 'button', className: 'tg-control', onClick: () => enter(selected.id) }, t('enterGroup')))),
+            expandedUnit(selected) && selected.parent === scope.id && h('button', { type: 'button', className: 'tg-control', onClick: () => enter(selected.id) }, t('enterGroup')))),
       h('div', { className: 'tg-canvas-toolbar' },
         h('div', { className: 'tg-canvas-tools' }, h('span', { className: 'tg-canvas-count' }, t('canvasCount', { nodes: visibleItems.length, edges: layout.wires.length })),
           h('select', { className: 'tg-task-select', 'aria-label': t('findTask'), value: focusId ?? '', onChange: event => {
@@ -368,8 +378,9 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
     return h('div', { className: 'tg-execution' },
       h('div', { className: 'tg-progress', role: 'status', 'aria-live': 'polite' },
         h('strong', null, t(labels[execution.state])),
-        activity && h('span', null, stage, ' · ', activity.kind === 'model' ? t('requestStep', { step: activity.step })
-          : activity.kind === 'tool' ? t('toolStep', { tool: activity.tool }) : t('resultStep')),
+        activity && h('span', null, stage, activity.taskLabel ? ' · ' + activity.taskLabel : '', activity.kind === 'boundary' ? '' : ' · ', activity.kind === 'boundary' ? '' : activity.kind === 'model' ? t('requestStep', { step: activity.step })
+          : activity.kind === 'tool' ? h('span', { title: activity.tool, 'data-tool-id': activity.tool },
+            t('toolStep', { tool: toolDisplay.label(activity.tool) })) : t('resultStep')),
         activity && h('time', { dateTime: activity.at }, new Date(activity.at).toLocaleTimeString())),
       h('div', { className: 'tg-actions' },
         execution.canPause && h('button', { type: 'button', className: 'tg-control', disabled: !allowed || pending || failed,
@@ -405,7 +416,7 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
     else if (model.children.get(null)?.[0]?.status === 'COMPLETE') current = t('graphComplete')
     else if (progress.ready) current = `${t('ready')} · ${progress.ready}`
     const title = failed ? `${t('stale')} · ${current}` : current
-    const progressText = t('progress', { done: progress.complete, total: progress.total })
+    const progressText = t(graph.hierarchy?.version === 2 ? 'unitProgress' : 'progress', { done: progress.complete, total: progress.total })
     const conditionProps = { selected, conditions: model.conditions, entryEdges: model.entryEdges, t, onSelect: setSelected }
     const refreshButton = () => h('button', { className: 'tg-control', type: 'button', disabled: busy, onClick: refresh }, t('retry'))
     const notices = () => h(React.Fragment, null,
@@ -419,9 +430,9 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
       dialog.showModal()
       dialog.querySelector('[data-tg-close]').focus()
     }
-    function branch(parent, depth = 0) {
+    function branch(parent) {
       const rows = model.children.get(parent)
-      if (!rows || depth >= (graph.hierarchy ? 17 : 16)) return null
+      if (!rows) return null
       return h('ol', { className: parent === null ? 'tg-tree' : undefined }, rows.map(node =>
         h('li', { key: node.id },
           h('button', { className: 'tg-node', type: 'button', 'data-kind': node.kind,
@@ -430,7 +441,7 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
             onClick: () => setSelected(node.id) },
           h('span', { className: 'tg-node-name', title: node.label }, node.label), badge(node, t),
           model.legal.has(node.id) && h('span', { className: 'tg-badge' }, t('ready'))),
-          branch(node.id, depth + 1))))
+          branch(node.id))))
     }
     return h('section', { className: 'tg-dock', 'data-testid': 'transaction-graph-dock', 'aria-label': t('title') },
       h('style', null, styles),
@@ -457,8 +468,8 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
               progress.inactive > 0 && h('span', null, t('totalInactive', { count: progress.inactive })),
               progress.excluded > 0 && h('span', null, t('totalExcluded', { count: progress.excluded }))),
           graph.legalNext.length > 0 && h('div', { className: 'tg-ready' }, h('strong', null, t('ready')),
-            graph.legalNext.map(choice => h('button', { type: 'button', className: 'tg-link-button', key: choice.id,
-              onClick: () => setSelected(choice.id) }, model.nodes.get(choice.id)?.label))),
+            graph.nodes.filter(node => model.legal.has(node.id)).map(node => h('button', { type: 'button', className: 'tg-link-button', key: node.id,
+              onClick: () => setSelected(node.id) }, node.label))),
           h('div', { className: 'tg-grid' },
             h('section', { className: 'tg-area', 'aria-label': t('tree') }, h('h4', null, t('tree')), branch(null)),
             h(Conditions, conditionProps))))),
@@ -470,7 +481,7 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
             h('button', { className: 'tg-control', type: 'button', 'data-tg-close': true,
               onClick: () => viewer.current.close() }, t('exitFullscreen')))),
         h('div', null, h(ExecutionControls, executionProps), notices(),
-          h('ul', { className: 'tg-legend' }, ['branchChosen', 'prerequisiteMet', ...(graph.hierarchy ? ['dispositionReady'] : []), 'blocked', 'edgeWaiting', 'branchExcluded'].map(state =>
+          h('ul', { className: 'tg-legend' }, ['branchChosen', 'prerequisiteMet', ...(graph.hierarchy ? ['dispositionReady'] : []), ...(graph.edges.some(edge => edge.reference === 'MIXED') ? ['ruleMixed'] : []), 'blocked', 'edgeWaiting', 'branchExcluded'].map(state =>
             h('li', { key: state }, h('span', { className: 'tg-legend-mark', 'data-state': state, 'aria-hidden': true }), t(state))))),
         viewerVisited && h(BranchCanvas, { graph, selected, active, t, onSelect: setSelected }),
         h('details', { className: 'tg-inspector', open: detailsOpen, onToggle: event => setDetailsOpen(event.currentTarget.open) },
@@ -576,7 +587,14 @@ export function createClientPlugin(React, z, createRemoteContribution, graphPres
   return {
     inject: ['slots', 'locale', 'remote'],
     async apply(ctx) {
+      installConfigCard(ctx, React, primitives, { id: 'dsh-better-task-grapth', title: '独立任务图', en: 'Task graph', order: 54,
+        description: '这里配置独立任务图。完整单元工作流的参数位于「动态上下文」。更改项目或账本位置会重新装载插件。',
+        groups: [{ title: '项目与账本', fields: [configField('projectRoot', '固定项目根目录', 'text', { hint: '留空时使用会话工作目录。' }),
+          configField('storageRelative', '项目内账本相对目录'), configField('enableSwitch', '允许独立图使用 Switch 节点', 'boolean')] },
+          { title: '单元与材料限制', fields: unitLimitFields }] })
       ctx.effect(() => ctx.locale.register('projectTransactionGraph', locale))
+      toolDisplay.register(ctx, 'transactionGraph.tools', graphToolNames)
+      ctx.provide('transactionGraphToolDisplay', toolDisplay)
       const unmount = await ctx.remote.$mount(contribution)
       ctx.effect(() => unmount)
       ctx.inject(['remote.transactionGraphView'], mounted => {

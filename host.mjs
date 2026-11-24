@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import fs from 'node:fs'
 import path from 'node:path'
+import { resolveWorkflowLimits } from './workflow-limits.mjs'
 import { createHash, randomUUID } from 'node:crypto'
 import { TransactionGraph, canonical, copy, digest, evidenceRefs, GraphError, view } from './core.mjs'
 import { MemoryGraphStore } from './store.mjs'
 import { HostJournal, claimDigest } from './journal.mjs'
 import { KEY, INTENT, RECEIPT, RECOVERY } from './projection.mjs'
+import { describe } from './rules.mjs'
 import { administrative, incompleteDisposition, ownedExecutionChain, unresolvedWork, workKey } from './work-policy.mjs'
 
 const fail = (code, detail = code) => { throw new GraphError(code, detail) }
 // Preserve the standalone pre-extension default. Callers may opt into a policy.
-export const ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
 const under = (root, target) => { const relative = path.relative(root, target); return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep) }
 export function realProjectPath(root, requested, { directory = true } = {}) {
   if (typeof requested !== 'string' || !path.isAbsolute(requested)) fail('ABSOLUTE_PROJECT_PATH_REQUIRED')
@@ -40,7 +41,7 @@ function referenceSeq(reference, sessionId) {
   if (!Number.isSafeInteger(value) || value < 0) fail('EVIDENCE_BAD_SEQ')
   return value
 }
-export function artifactProof(projectRoot, ref, signal, { maxBytes = ARTIFACT_MAX_BYTES } = {}) {
+export function artifactProof(projectRoot, ref, signal, { maxBytes = null } = {}) {
   if (!ref.sha256) fail('ARTIFACT_SHA_REQUIRED')
   const identity = readArtifactIdentity(projectRoot, ref, signal, { maxBytes })
   if (identity.sha256 !== ref.sha256) fail('ARTIFACT_CHANGED_OR_HASH_MISMATCH', { path: '/sha256', item: ref.ref, reason: 'The declared SHA-256 differs from current file bytes.', expected: ref.sha256, observed: identity.sha256, repair: 'Check the existing evidence and the intended file identity; do not fabricate a hash or silently change the acceptance criterion.' })
@@ -59,7 +60,7 @@ export function artifactCurrentIdentity(projectRoot, ref, signal, options) {
   }
 }
 /** Host-only current-byte identity, without an asserted prior hash or acceptance. */
-export function readArtifactIdentity(projectRoot, ref, signal, { maxBytes = ARTIFACT_MAX_BYTES } = {}) {
+export function readArtifactIdentity(projectRoot, ref, signal, { maxBytes = null } = {}) {
   if (maxBytes !== null && (!Number.isSafeInteger(maxBytes) || maxBytes < 1)) fail('ARTIFACT_BYTE_POLICY_INVALID')
   const requested = path.isAbsolute(ref.ref) ? ref.ref : path.resolve(projectRoot, ref.ref)
   const file = realProjectPath(projectRoot, requested, { directory: false })
@@ -108,29 +109,49 @@ export function resolveEvidence({ references, state, binding, activeProof, outco
   return result
 }
 
+// Each wire describes the signed tests on its own source. A repeated source
+// with different tests can have mixed evidence within the target's alternatives.
+function sourceTests(expr, key, outcome, negated = false) {
+  if (expr.node) return expr.node === key ? [expr.in.includes(outcome) !== negated] : []
+  if (expr.not) return sourceTests(expr.not, key, outcome, !negated)
+  return (expr.all ?? expr.any).flatMap(term => sourceTests(term, key, outcome, negated))
+}
+
 export function formatGraphView(display, plan, pending = null) {
   const parents = new Map(plan.nodes.map(node => [node.id, node.parent]))
   const blocked = new Set(display.pendingButBlocked.filter(node => node.unmetPrerequisites.length).map(node => node.id))
   const choices = rows => pending ? [] : rows.map(({ id, choice }) => ({ id, choice }))
+  const labels = Object.fromEntries(plan.nodes.map(n=>[n.key,n.label]))
+  const byId = new Map(plan.nodes.map(node => [node.id, node]))
+  const states = new Map(display.nodes.map(node => [node.id, node.ruleState]))
+  const reference = (from, to) => {
+    const outcome = states.get(from)
+    if (!['PASS', 'FAILED', 'BLOCK'].includes(outcome)) return 'PENDING'
+    const tests = (byId.get(to).rules ?? []).flatMap(row => sourceTests(row.when, byId.get(from).key, outcome))
+    return tests.every(Boolean) ? 'MATCH' : tests.some(Boolean) ? 'MIXED' : 'MISS'
+  }
   const terminals = new Set(plan.nodes.map(node => node.terminal).filter(Boolean))
+  const policy = plan.hierarchy?.version === 2 ? { version: 2, maxDepth: plan.hierarchy.maxGroupDepth } : plan.hierarchy
   return { revision: display.revision, title: display.graph.title,
-    ...(plan.hierarchy ? { hierarchy: { ...copy(plan.hierarchy), focusScopeId: display.focusScopeId ?? display.hierarchy.pending?.scopeId
+    ...(plan.hierarchy ? { hierarchy: { ...copy(policy), focusScopeId: display.focusScopeId ?? display.hierarchy.pending?.scopeId
       ?? parents.get(display.active?.nodeId ?? display.legalNext[0]?.id) ?? plan.nodes.find(node => node.parent === null).id,
       pending: copy(display.hierarchy.pending), complete: display.goalReached } } : {}),
-    nodes: display.nodes.map(({ id, label, kind, status, disposition, branchState, selectedBranch, terminal, acceptance, gate }) => ({
-      id, label, kind, status, parent: parents.get(id), ...(disposition === undefined ? {} : { disposition }),
+    nodes: display.nodes.map(({ id, label, kind, status, disposition, branchState, selectedBranch, terminal, acceptance, gate, ruleState, rules }) => ({
+      ...(ruleState ? {ruleState,ruleText:rules.map(row=>row.id+' · '+describe(row.when,labels))} : {}),
+      id, label, ...(plan.hierarchy?.version === 2 ? { kind: 'unit', mode: kind === 'container' ? 'planned' : 'direct' } : { kind }),
+      status, parent: parents.get(id), ...(disposition === undefined ? {} : { disposition }),
       ...(terminal ? { terminal, acceptance, gate } : {}), ...(terminals.has(id) ? { isTerminal: true } : {}),
       ...(blocked.has(id) && !display.legalNext.some(node => node.id === id) ? { blocked: true } : {}),
       ...(branchState ? { branchState } : {}), ...(selectedBranch ? { selectedBranch } : {}),
     })),
     edges: plan.edges.map(({ from, to, kind, outcome, case: selectedCase }) => ({ from, to, kind,
-      ...(outcome === undefined ? {} : { outcome }), ...(selectedCase === undefined ? {} : { case: selectedCase }) })),
+      ...(kind === 'rule' ? { reference: reference(from, to) } : {}), ...(outcome === undefined ? {} : { outcome }), ...(selectedCase === undefined ? {} : { case: selectedCase }) })),
     active: display.active ? { nodeId: display.active.nodeId, recoveryRequired: display.active.recoveryRequired } : null,
     pending, legalNext: choices(display.legalNext), skipChoices: choices(display.skipChoices) }
 }
 
 export class DshTransactionHost {
-  constructor(ctx, { projectRoot, storageRelative = '.dsh/transaction-graphs-v4', enableSwitch = false,
+  constructor(ctx, { projectRoot, storageRelative = '.dsh/transaction-graphs-v4', enableSwitch = false, workflowLimits,
     appendPluginRecord, journalFactory = options => new HostJournal(options), owner = `owner_${randomUUID()}` }) {
     if (typeof appendPluginRecord !== 'function') fail('SESSION_WRITER_REQUIRED')
     if (projectRoot !== undefined && (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)
@@ -140,6 +161,8 @@ export class DshTransactionHost {
     if (typeof storageRelative !== 'string' || path.isAbsolute(storageRelative) || !storageRelative || storageRelative.split(/[\\/]/).some(x => !x || x === '..' || x === '.')) fail('INVALID_STORAGE_RELATIVE_PATH')
     if (typeof enableSwitch !== 'boolean') fail('INVALID_SWITCH_POLICY')
     this.ctx = ctx; this.projectRoot = projectRoot === undefined ? undefined : path.resolve(projectRoot)
+    const fixedLimits = resolveWorkflowLimits(workflowLimits?.get ? workflowLimits.get() : workflowLimits)
+    Object.defineProperty(this, 'workflowLimits', { get: workflowLimits?.get ? () => workflowLimits.get() : () => fixedLimits })
     this.storageRelative = storageRelative; this.enableSwitch = enableSwitch
     this.append = appendPluginRecord; this.journalFactory = journalFactory; this.owner = owner
     this.journals = new Map(); this.serial = new WeakMap(); this.tasks = new Set(); this.definitions = new Map(); this.closed = false
@@ -160,14 +183,15 @@ export class DshTransactionHost {
     return { contract: 'DSH_TRANSACTION_GRAPH_HOST_V4', projectRoot, sessionId: session.id,
       sessionCreatedAt: session.header.createdAt, originalCwd: original, enableSwitch: this.enableSwitch }
   }
-  journal(session, { readOnly = false } = {}) {
+  journal(session, { readOnly = false, start = false } = {}) {
     const binding = this.binding(session), key = digest(binding)
     const cached = this.journals.get(key)
     const journal = cached ?? this.journalFactory({ projectRoot: binding.projectRoot,
       directory: path.join(binding.projectRoot, this.storageRelative, key), binding, readOnly })
     if (!cached && !readOnly) this.journals.set(key, journal)
     const saved = journal.read(), projected = this.projection(session)
-    if (saved.revision === 0 && (projected.intents.length || projected.receipts.length)) fail('HOST_JOURNAL_MISSING_FOR_RECORDED_SESSION')
+    if (!saved.pending && !saved.claims.length && (projected.intents.length || projected.receipts.length))
+      fail('HOST_JOURNAL_MISSING_FOR_RECORDED_SESSION')
     for (const row of saved.claims) {
       const intent = projected.intents.find(item => item.data.operationId === row.operationId)
       if (!intent || intent.intentSeq !== row.intentSeq || intent.rootResultSeq !== row.resultSeq
@@ -188,7 +212,7 @@ export class DshTransactionHost {
           || begin.workStartedAtRoot !== proof.workStartedAtBegin || begin.workExecutedAtRoot !== proof.workExecutedAtBegin)
         fail('ACTIVE_BEGIN_WORK_BASELINE_MISMATCH')
     }
-    return { journal, binding, key, saved }
+    return { journal, binding, key, saved: !readOnly && (start || saved.revision) ? journal.admitRelease(saved) : saved }
   }
   inProject(session) {
     if (this.closed || !session) return false
@@ -402,7 +426,7 @@ export class DshTransactionHost {
       state, activeProof: saved.activeProof, evidence: resolvedEvidence })
     if (operation === 'finish' && args.outcome === 'complete' && args.disposition !== undefined) fail('COMPLETE_HAS_NO_INCOMPLETE_DISPOSITION')
     const temporary = new MemoryGraphStore(saved.document), core = new TransactionGraph(temporary, {
-      enableSwitch: this.enableSwitch, id: prefix => prefix === 'owner' ? this.owner : `${prefix}_${randomUUID()}` })
+      workflowLimits: this.workflowLimits, enableSwitch: this.enableSwitch, id: prefix => prefix === 'owner' ? this.owner : `${prefix}_${randomUUID()}` })
     if (!['create', 'begin', 'finish', 'skip'].includes(operation)) fail('UNKNOWN_TRANSACTION_OPERATION')
     core[operation]({ ...copy(args), operationId })
     const candidate = temporary.read(), claim = { operationId, payloadHash, operation, arguments: copy(args),
@@ -484,7 +508,7 @@ export class DshTransactionHost {
     const arguments_ = { expectedRevision, outcome: 'incomplete', disposition: 'UNSATISFIED', evidence: [], note }
     const recoveryOwner = `owner_reconcile_${randomUUID()}`
     const temporary = new MemoryGraphStore(before.document), core = new TransactionGraph(temporary, {
-      enableSwitch: this.enableSwitch, id: prefix => prefix === 'owner' ? recoveryOwner : `${prefix}_${randomUUID()}`, verifyRecovery: async () => true })
+      workflowLimits: this.workflowLimits, enableSwitch: this.enableSwitch, id: prefix => prefix === 'owner' ? recoveryOwner : `${prefix}_${randomUUID()}`, verifyRecovery: async () => true })
     await core.reconcile({ ...arguments_, operationId })
     if (this.closed || this.recoveryVerifier !== verifier || canonical(journal.read()) !== canonical(before)) fail('RECOVERY_APPROVAL_NOT_CURRENT')
     const currentWork = this.workState(session, before)
