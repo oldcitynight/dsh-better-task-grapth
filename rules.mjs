@@ -170,11 +170,16 @@ class Decisions {
   compile(expr, atom, inverted = false) {
     if (expr.not) return this.compile(expr.not, atom, !inverted)
     if (expr.node) return atom(expr, inverted)
-    const all = Boolean(expr.all) !== inverted
-    return (expr.all ?? expr.any).reduce(
-      (a, e) => this.apply(all ? 'and' : 'or', a, this.compile(e, atom, inverted)),
-      all ? 1 : 0
-    )
+    const all = Boolean(expr.all) !== inverted, children = expr.all ?? expr.any
+    const op = all ? 'and' : 'or'
+    // Keep the decision variable order while avoiding a chain of prefix diagrams.
+    const combine = (start, end) => {
+      if (start === end) return all ? 1 : 0
+      if (end - start === 1) return this.compile(children[start], atom, inverted)
+      const middle = start + Math.floor((end - start) / 2)
+      return this.apply(op, combine(start, middle), combine(middle, end))
+    }
+    return combine(0, children.length)
   }
 }
 export function inspectRules(rows) {
@@ -191,6 +196,7 @@ export function inspectRules(rows) {
     inspect(expr[written], path + '/' + written, combined, inverted)
   }
   function inspect(items, at, kind, inverted = false) {
+    const bySource = new Map()
     const terms = items.map((e, i) => {
       inspectChildren(e, at + '/' + i, inverted)
       const yes = d.compile(e, atom, inverted),
@@ -199,25 +205,31 @@ export function inspectRules(rows) {
         ruleError('RULE_CONTRADICTION', at + '/' + i, 'No assignment satisfies this condition.', {
           expression: describe(e)
         })
-      return { yes, no }
+      const sources = new Set(atoms(e))
+      for (const source of sources) {
+        if (!bySource.has(source)) bySource.set(source, [])
+        bySource.get(source).push(i)
+      }
+      return { yes, no, sources }
     })
     const removed = new Set()
-    for (let i = 0; i < terms.length; i++)
-      for (let j = i + 1; j < terms.length; j++) {
-        const a = terms[i],
-          b = terms[j],
+    for (const [i, a] of terms.entries()) {
+      const related = new Set()
+      for (const source of a.sources)
+        for (const j of bySource.get(source)) if (j > i) related.add(j)
+      // Preserve the diagnostic and merge order used by saved rule drafts.
+      for (const j of [...related].sort((left, right) => left - right)) {
+        const b = terms[j],
           same = a.yes === b.yes && a.no === b.no
         const overlap = d.apply('and', a.yes, b.yes)
-        const refs = new Set(atoms(items[i]))
-        if (!atoms(items[j]).some((k) => refs.has(k))) continue
+        if (!overlap && !same) continue
         const op = kind === 'all' ? 'and' : 'or',
           dual = kind === 'all' ? 'or' : 'and'
         const yes = d.apply(op, a.yes, b.yes),
           no = d.apply(dual, a.no, b.no)
         const redundant = yes === a.yes && no === a.no ? j : yes === b.yes && no === b.no ? i : null
-        if (!overlap && !same) continue
         if (at === '/rules' && !same && redundant === null) overlaps.push([i, j])
-        const example = d.witness(d.apply('and', d.apply('or', a.yes, b.yes), d.not(d.apply('and', a.yes, b.yes))))
+        const example = d.witness(d.apply('and', d.apply('or', a.yes, b.yes), d.not(overlap)))
         warnings.push({
           kind: same ? 'duplicate' : redundant !== null ? 'covered' : 'overlap',
           path: at,
@@ -233,6 +245,7 @@ export function inspectRules(rows) {
         })
         if (redundant !== null && !removed.has(i) && !removed.has(j)) removed.add(redundant)
       }
+    }
     merges.set(at, removed)
   }
   inspect(

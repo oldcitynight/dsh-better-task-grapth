@@ -168,7 +168,7 @@ test('browser snapshot reads only its session and preserves active, failed and b
   assert.deepEqual(schema.parse(f.host.snapshot(f.session)), { sessionId: f.session.id, status: 'empty', graph: null })
   assert.equal(fs.existsSync(storage), false)
   await f.createAndBegin()
-  const failed = f.external('fixture_check', { status: 'FAIL' })
+  const failed = f.external('fixture_check', { goalVerification: { status: 'FAIL' } })
   const staged = await f.start('finish', { expectedRevision: 2, outcome: 'incomplete', disposition: 'FAILED',
     evidence: [f.reference(failed)], note: 'private diagnostic' })
   const journal = path.join(storage, fs.readdirSync(storage)[0], 'transaction-host-journal.json')
@@ -286,7 +286,7 @@ test('old, foreign, failed, UNKNOWN or NOT_RUN evidence cannot complete an activ
   for (const kind of ['old', 'foreign', 'failed', 'UNKNOWN', 'NOT_RUN']) {
     const f = fixture(t), old = f.external()
     await f.createAndBegin()
-    const seq = kind === 'old' ? old : f.external('fixture_check', kind === 'UNKNOWN' || kind === 'NOT_RUN' ? { status: kind } : { ok: true }, kind === 'failed')
+    const seq = kind === 'old' ? old : f.external('fixture_check', kind === 'UNKNOWN' || kind === 'NOT_RUN' ? { goalVerification: { status: kind } } : { ok: true }, kind === 'failed')
     const ref = kind === 'foreign' ? { kind: 'tool_result', ref: sessionReference('other-session', seq) } : f.reference(seq)
     await assert.rejects(f.callTool('finish', { expectedRevision: 2, outcome: 'complete', evidence: [ref], note: 'Invalid evidence fixture' }))
     assert.equal(f.saved().document.revision, 2); assert.equal(f.saved().pending, null)
@@ -397,7 +397,7 @@ test('typed false/NOT_RUN/UNKNOWN at middle or root cannot commit a successful-l
     await f.callTool('create', { expectedRevision: 0, definition: graphDefinition })
     f.append('tool/call', { turn: 1, step: 0, callId: 'typed_root', name: 'run_code', arguments: '{}' })
     const staged = await f.start('begin', { expectedRevision: 1, choice: 0 }, 'typed_root')
-    const negative = status === 'FAIL' ? { ok: false } : { status }
+    const negative = { goalVerification: { status } }
     f.append('tool/ptc-dispatch', { subCallId: staged.callId, parentCallId: 'typed_middle', rootCallId: 'typed_root',
       name: staged.name, isError: false, content: [{ type: 'text', text: JSON.stringify(staged.value) }] })
     f.append('tool/ptc-dispatch', { subCallId: 'typed_middle', parentCallId: 'typed_root', rootCallId: 'typed_root',
@@ -420,7 +420,7 @@ test('otherwise-successful child proof cannot finish a leaf through a typed-nega
     f.append('tool/call', { turn: 1, step: 0, callId: 'evidence_root', name: 'run_code', arguments: '{}' })
     const childSeq = f.append('tool/ptc-dispatch', { subCallId: 'evidence_child', parentCallId: 'evidence_middle', rootCallId: 'evidence_root',
       name: 'fixture_check', isError: false, content: [{ type: 'text', text: '{"ok":true}' }] })
-    const negative = status === 'FAIL' ? { passed: false } : { status }
+    const negative = { verification: { status } }
     f.append('tool/ptc-dispatch', { subCallId: 'evidence_middle', parentCallId: 'evidence_root', rootCallId: 'evidence_root',
       name: 'run_code', isError: false, content: [{ type: 'text', text: JSON.stringify(location === 'middle' ? negative : { ok: true }) }] })
     f.result('evidence_root', location === 'root' ? negative : { ok: true })
@@ -437,7 +437,7 @@ test('otherwise-successful child proof cannot finish a leaf through a typed-nega
 test('UNKNOWN or truly pending work blocks both finishes even with empty refs and a note', async t => {
   for (const kind of ['UNKNOWN', 'PENDING']) for (const outcome of ['complete', 'incomplete']) {
     const f = fixture(t); await f.createAndBegin()
-    if (kind === 'UNKNOWN') f.external('fixture_work', { status: 'UNKNOWN' })
+    if (kind === 'UNKNOWN') f.external('fixture_work', { goalVerification: { status: 'UNKNOWN' } })
     else f.append('tool/call', { turn: 1, step: 0, callId: 'pending_work', name: 'fixture_work', arguments: '{}' })
     await assert.rejects(f.callTool('finish', { expectedRevision: 2, outcome,
       ...(outcome === 'incomplete' ? { disposition: 'UNSATISFIED' } : {}), evidence: [], note: 'Empty refs cannot discard work' }),
@@ -446,7 +446,7 @@ test('UNKNOWN or truly pending work blocks both finishes even with empty refs an
   }
 })
 test('UNKNOWN remains in the full proof ledger and still blocks an empty-ref incomplete', async t => {
-  const f = fixture(t); await f.createAndBegin(); const unknownSeq = f.external('fixture_unknown', { status: 'UNKNOWN' })
+  const f = fixture(t); await f.createAndBegin(); const unknownSeq = f.external('fixture_unknown', { goalVerification: { status: 'UNKNOWN' } })
   for (let i = 0; i < 1100; i++) f.external('fixture_read', { ok: true })
   assert.equal(f.state.proofs.some(row => row.seq === unknownSeq), true)
   assert.equal(f.state.uncertainties.length, 1)
@@ -457,7 +457,7 @@ test('UNKNOWN remains in the full proof ledger and still blocks an empty-ref inc
 test('UNKNOWN goal changes and graph-like names cannot use administrative exclusions', async t => {
   for (const name of ['update_goal', 'transaction_graph_external', 'transaction_graph_read']) {
     const f = fixture(t); await f.createAndBegin()
-    f.external(name, { status: 'UNKNOWN' })
+    f.external(name, { goalVerification: { status: 'UNKNOWN' } })
     await assert.rejects(f.callTool('finish', { expectedRevision: 2, outcome: 'incomplete', disposition: 'UNSATISFIED',
       evidence: [], note: 'Names do not authorize dropping UNKNOWN' }), errorCode('ACTIVE_OWNED_WORK_UNRESOLVED'))
     assert.ok(f.saved().document.state.active)
@@ -472,14 +472,14 @@ test('zero-work explicit SKIPPED_NOT_RUN drives incomplete route without inventi
   assert.deepEqual(read.legalNext.map(row => row.label), ['B'])
 })
 test('known terminal FAIL legitimately drives FAILED incomplete without an operator', async t => {
-  const f = fixture(t); await f.createAndBegin(); const failed = f.external('fixture_check', { ok: false })
+  const f = fixture(t); await f.createAndBegin(); const failed = f.external('fixture_check', { goalVerification: { status: 'FAIL' } })
   await f.callTool('finish', { expectedRevision: 2, outcome: 'incomplete', disposition: 'FAILED', evidence: [f.reference(failed)], note: 'The actual check failed' })
   const read = await f.callTool('read', {})
   assert.equal(read.nodes.find(row => row.key === 'a').disposition, 'FAILED')
   assert.deepEqual(read.legalNext.map(row => row.label), ['B'])
 })
 test('NOT_RUN stays distinct from executed failure and permits explicit non-execution disposition', async t => {
-  const f = fixture(t); await f.createAndBegin(); const notRun = f.external('fixture_action', { status: 'NOT_RUN' })
+  const f = fixture(t); await f.createAndBegin(); const notRun = f.external('fixture_action', { goalVerification: { status: 'NOT_RUN' } })
   const proof = f.state.proofs.find(row => row.seq === notRun)
   assert.equal(proof.ownOutcome, 'NOT_RUN'); assert.equal(proof.qualification, 'FAILED'); assert.equal(proof.isError, false)
   await assert.rejects(f.callTool('finish', { expectedRevision: 2, outcome: 'incomplete', disposition: 'FAILED', evidence: [f.reference(notRun)], note: 'Do not relabel this as failure' }),
@@ -521,7 +521,7 @@ test('commit-time work scan does not union concurrent graph protocol sibling cha
   assert.equal(work.running.length, 3); assert.equal(work.unresolved.length, 1)
 })
 test('current-owner UNKNOWN requires explicit independent cleanup approval and records UNSATISFIED, never fake FAIL', async t => {
-  const f = fixture(t); await f.createAndBegin(); const unknown = f.external('fixture_action', { status: 'UNKNOWN' })
+  const f = fixture(t); await f.createAndBegin(); const unknown = f.external('fixture_action', { goalVerification: { status: 'UNKNOWN' } })
   const attempt = f.saved().document.state.active.attemptId
   let cleaned = false
   f.host.registerRecoveryVerifier({ version: 'fixture-cleanup-facts-v1', verify: async request => cleaned && request.unresolvedOwnedWork.length === 1 && request.runningWorkCount === 0 })
