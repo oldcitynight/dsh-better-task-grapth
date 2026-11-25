@@ -155,6 +155,20 @@ test('diagnostics distinguish contradictions, equivalent branches, coverage and 
   )
 })
 
+test('independent rule branches retain the canonical witness and related warnings', () => {
+  const branches = Array.from({ length: 96 }, (_, i) => {
+    const key = 'unit_' + String(i).padStart(3, '0')
+    return rule(key, { all: [atom(key, 'PASS'), { not: atom(key + '_review', 'FAILED') }] })
+  })
+  const duplicate = rule('again', { all: [...branches[0].when.all].reverse() })
+  const result = inspectRules([...branches, duplicate])
+  assert.deepEqual(result.merged, branches)
+  assert.equal(result.warnings.length, 1)
+  assert.deepEqual(result.warnings.map(row => [row.kind, row.first, row.second]), [['duplicate', 0, 96]])
+  assert.equal(evaluate({ any: branches.map(row => row.when) }, key => result.witness[key] ?? null), true)
+  assert.equal(evaluate(branches[0].when, key => key === 'unit_000' ? 'PASS' : null), null)
+})
+
 test('NOT is unary, keeps pending unknown, and obeys both De Morgan laws for all partial assignments', () => {
   const a = atom('a', 'PASS'),
     b = atom('b', 'FAILED', 'BLOCK')
