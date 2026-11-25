@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { TransactionGraph, GraphError } from '../core.mjs'
 import { FileGraphStore } from '../store.mjs'
 
@@ -30,7 +32,7 @@ test('CAS atomically persists one document containing plan, state and replayable
   assert.equal(restarted.read().revision, 2)
   assert.equal(restarted.read().active.recoveryRequired, true)
   assert.equal(restartedStore.read().events.length, 2)
-  assert.deepEqual(fs.readdirSync(options.directory), ['transaction-graph.json'])
+  assert.deepEqual(fs.readdirSync(options.directory).sort(), ['.transaction-graph.lock', 'transaction-graph.json'])
   assert.throws(() => restarted.begin({ expectedRevision: 2, operationId: 'replay', choice: 0 }), code('RECOVERY_REQUIRED'))
 })
 test('another store view cannot commit an old revision and cannot overwrite history', t => {
@@ -46,6 +48,22 @@ test('leftover lock is never stolen after a crash and blocks replay', t => {
   assert.throws(() => new TransactionGraph(store).create({ operationId: 'create', definition }), code('CAS_LOCK_BUSY_NO_AUTOMATIC_STEAL'))
   assert.equal(fs.existsSync(store.lock), true)
   assert.equal(fs.existsSync(store.file), false)
+})
+test('kernel lease denies another writer while held and releases on owner exit', async t => {
+  const options = environment(t), store = new FileGraphStore(options)
+  const child = spawn(process.execPath, ['--input-type=module', '-e',
+    "import { acquireFileLease } from " + JSON.stringify(new URL('../store.mjs', import.meta.url).href) +
+    "; acquireFileLease(process.argv[1], { busy: 'busy', invalid: 'invalid', unavailable: 'unavailable' }); process.on('message', () => {}); process.send('held')",
+    store.lock], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
+  // Hold the worker open with an IPC listener after lock acquisition.
+  const exit = once(child, 'exit')
+  try {
+    const ready = await Promise.race([once(child, 'message').then(([value]) => value), exit.then(() => 'exited')])
+    assert.equal(ready, 'held')
+    assert.throws(() => new TransactionGraph(store).create({ operationId: 'blocked', definition }), code('CAS_LOCK_BUSY_NO_AUTOMATIC_STEAL'))
+  } finally { child.kill('SIGKILL'); await exit }
+  new TransactionGraph(store).create({ operationId: 'after_exit', definition })
+  assert.equal(store.read().revision, 1)
 })
 test('symlinked directory escaping the project is rejected before touching its target', t => {
   const options = environment(t), outside = fs.mkdtempSync(path.join(os.tmpdir(), 'transaction-graph-outside-'))
@@ -75,11 +93,12 @@ test('malformed or checksum-corrupt record fails closed instead of silently star
   assert.throws(() => store.read(), code('DOCUMENT_CHECKSUM'))
   assert.throws(() => graph.create({ operationId: 'new_create', definition }), code('DOCUMENT_CHECKSUM'))
 })
-test('failed mutation leaves original state intact, removes only its own temporary lock', t => {
+test('failed mutation leaves original state intact and releases the kernel lease', t => {
   const options = environment(t), store = new FileGraphStore(options), graph = new TransactionGraph(store)
   graph.create({ operationId: 'create', definition })
   const before = fs.readFileSync(store.file, 'utf8')
   assert.throws(() => store.compareAndSwap(1, () => { throw new Error('simulated validation failure before commit') }), /simulated validation failure/)
   assert.equal(fs.readFileSync(store.file, 'utf8'), before)
-  assert.equal(fs.existsSync(store.lock), false)
+  assert.equal(fs.statSync(store.lock).size, 0)
+  graph.begin({ expectedRevision: 1, operationId: 'begin', choice: 0 })
 })

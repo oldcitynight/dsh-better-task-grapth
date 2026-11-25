@@ -603,18 +603,26 @@ function replayLedger(events) {
   return { state, unitOrder }
 }
 export function replay(events) { return replayLedger(events).state }
+// Retain a single verified projection per module instance. Even a cache hit
+// verifies the document bytes; caller-owned objects never become cache state.
+let latestReplay
 export function documentOf(events) {
-  const state = replay(events), document = { schema: 1, revision: state.revision, state, events: copy(events) }
-  return { ...document, checksum: digest(document) }
+  const journal = copy(events), replayed = replayLedger(journal)
+  const document = { schema: 1, revision: replayed.state.revision, state: copy(replayed.state), events: journal }
+  const checksum = digest(document)
+  latestReplay = { checksum, replayed: copy(replayed) }
+  return { ...document, checksum }
 }
 function validatedReplay(document) {
   object(document, ['schema', 'revision', 'state', 'events', 'checksum'], 'document')
   if (document.schema !== 1) fail('UNSUPPORTED_DOCUMENT_SCHEMA')
   const body = { ...document }; delete body.checksum
   if (digest(body) !== document.checksum) fail('DOCUMENT_CHECKSUM')
+  if (latestReplay?.checksum === document.checksum) return latestReplay.replayed
   const replayed = replayLedger(document.events)
   if (document.revision !== replayed.state.revision || canonical(document.state) !== canonical(replayed.state)) fail('SNAPSHOT_REPLAY_MISMATCH')
-  return replayed
+  latestReplay = { checksum: document.checksum, replayed: copy(replayed) }
+  return latestReplay.replayed
 }
 export function validateDocument(document) {
   validatedReplay(document)
@@ -663,7 +671,7 @@ export function view(document, owner) {
     active: state.active ? { ...copy(state.active), recoveryRequired: state.active.owner !== owner,
       caseChoices: state.plan.nodes.find(node => node.id === state.active.nodeId).switchCases.map((label, choice) => ({ choice, label })) } : null,
     ...(planIssue ? { planIssue } : {}),
-    legalNext: ready.map((node, choice) => ({ choice, id: node.id, label: node.label, switchCases: node.switchCases })),
+    legalNext: ready.map((node, choice) => ({ choice, id: node.id, label: node.label, switchCases: copy(node.switchCases) })),
     pendingButBlocked: progress.pending.filter(node => !readyIds.has(node.id)).map(node => ({ id: node.id,
       reason: planIssue?.code ?? (state.active ? 'ACTIVE_LEAF' : deferredTerminals.has(node.id) ? 'TERMINAL_DEFERRED' : 'UNMET_PREREQUISITE'),
       unmetPrerequisites: progress.unmetPrerequisites(node.id) })),
