@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Generic diagnostics only; this base plugin has no dynamic-context dependency.
 import { AsyncLocalStorage } from 'node:async_hooks'
-import fs from 'node:fs'
 const scopes = new AsyncLocalStorage()
 export const pointer = parts => '/' + parts.map(part => String(part).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')
 export const withValidation = (scope, fn) => scopes.run({ ...scopes.getStore(), ...scope }, fn)
+function publicDiagnostic(saved, scope) {
+  const { rejectionPoint, ...body } = saved
+  const location = rejectionPoint && { module: rejectionPoint.module, line: rejectionPoint.line, column: rejectionPoint.column }
+  return { ...body, ...scope, ...(location ? { rejectionPoint: location } : {}), issues: body.issues.map(issue => ({
+    ...issue, path: issue.path || scope.path || '',
+    // Persisted diagnostics from older releases can contain the old source fallback.
+    reason: issue.reason?.startsWith('The program rejected this exact check in ')
+      ? 'Validation rule ' + body.code + ' rejected this operation.' : issue.reason,
+  })) }
+}
 export function diagnostic(error, scope = {}) {
-  if (error?.diagnostic) return { ...error.diagnostic, ...scope, issues: error.diagnostic.issues.map(issue => ({ ...issue, path: issue.path || scope.path || '' })) }
+  if (error?.diagnostic) return publicDiagnostic(error.diagnostic, scope)
   const frame = String(error?.stack ?? '').split('\n').find(line => /^\s+at /.test(line) && /\.(mjs|js):\d+:\d+/.test(line) && !/validation\.mjs|new (GraphError|DynamicContextError)|at (fail|reportFailure|problem|invalid) |at RequestContract\.reject /.test(line))
   const origin = frame?.match(/([^/\s()]+\.(?:mjs|js)):(\d+):(\d+)/)
-  let check, sourceFile
-  // Source-only fallback for runtime invariants, not a guessed input field.
-  // Read only the throwing module; never read a path supplied by model input.
-  try {
-    const file = frame?.match(/(?:file:\/\/)?(\/[^()]+\.(?:mjs|js)):\d+:\d+/)?.[1]
-    sourceFile = file
-    if (file && origin) { const lines = fs.readFileSync(file, 'utf8').split('\n'); check = lines.slice(Math.max(0, +origin[2] - 4), +origin[2]).join('\n').trim() }
-  } catch {}
   const detail = error?.details ?? error?.detail ?? {}
   const context = { ...scopes.getStore(), ...scope }
   const code = error?.code ?? error?.info?.code ?? (error?.issues ? 'SCHEMA_VALIDATION_FAILED' : error?.name ?? 'VALIDATION_FAILED')
@@ -26,11 +27,11 @@ export function diagnostic(error, scope = {}) {
     return paths.map(parts => ({ path: root + (parts.length ? pointer(parts) : ''), reason: issue.message,
       ...(issue.expected ? { expected: issue.expected } : {}), rule: issue.code }))
   }) ?? detail.issues ?? (error?.violations ? schemaIssues(error.violations, root) : null) ?? [{ path: detail.path ?? root,
-    reason: detail.reason ?? (error?.message && error.message !== code ? error.message : check
-      ? `The program rejected this exact check in ${origin[1]}:${origin[2]}: ${check}` : `Validation rule ${code} rejected this operation.`),
+    reason: detail.reason ?? (error?.message && error.message !== code && !error.path
+      ? error.message : `Validation rule ${code} rejected this operation.`),
     ...Object.fromEntries(Object.entries(detail).filter(([key]) => key !== 'issues')) }]
   return { protocol: 'validation-feedback-v1', category: error?.issues || error?.violations ? 'schema' : 'program', code,
-    ...context, issues, ...(origin ? { rejectionPoint: { module: origin[1], ...(sourceFile ? { file: sourceFile } : {}), line: +origin[2], column: +origin[3], ...(check ? { check } : {}) } } : {}),
+    ...context, issues, ...(origin ? { rejectionPoint: { module: origin[1], line: +origin[2], column: +origin[3] } } : {}),
     repair: detail.repair ?? 'Correct the identified fields only. Preserve valid content and existing evidence. A rejection grants no new authority.' }
 }
 // Preserve the native path verbatim as well as its JSON Pointer when the native

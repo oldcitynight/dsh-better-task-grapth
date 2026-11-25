@@ -2,6 +2,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { GraphError, canonical, copy, validateDocument } from './core.mjs'
 
 const reject = (code, message = code) => { throw new GraphError(code, message) }
@@ -40,9 +41,30 @@ function regularBytes(file) {
     return buffer.subarray(0, count)
   } finally { fs.closeSync(fd) }
 }
-function regularJson(file) {
-  const bytes = regularBytes(file)
-  return bytes && JSON.parse(bytes.toString('utf8'))
+/** Keep the inode in place across releases. Older writers using mkdir at the
+ * same path fail closed. The kernel releases ownership on exit or crash. */
+export function acquireFileLease(file, { busy, invalid, unavailable }) {
+  let fd
+  try { fd = fs.openSync(file, fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600) }
+  catch (error) {
+    if (error.code === 'EISDIR') reject(busy, 'A legacy directory lock is present. Verify that all old writers are stopped before moving it aside.')
+    if (error.code === 'ELOOP') reject(invalid)
+    throw error
+  }
+  const check = () => {
+    const opened = fs.fstatSync(fd), current = fs.lstatSync(file, { throwIfNoEntry: false })
+    if (!opened.isFile() || opened.nlink !== 1 || opened.size !== 0 || !current || !sameFile(opened, current)) reject(invalid)
+  }
+  try {
+    check()
+    const result = spawnSync('flock', ['--exclusive', '--nonblock', '--conflict-exit-code', '75', '3'], {
+      stdio: ['ignore', 'ignore', 'ignore', fd], timeout: 5000,
+    })
+    if (result.status === 75) reject(busy)
+    if (result.status !== 0) reject(unavailable)
+    check()
+  } catch (error) { fs.closeSync(fd); throw error }
+  return { check, release() { if (fd !== undefined) { fs.closeSync(fd); fd = undefined } } }
 }
 
 export class MemoryGraphStore {
@@ -136,20 +158,15 @@ export class FileGraphStore {
   #commit(expectedRevision, update, prepare) {
     if (this.readOnly) reject('READ_ONLY_TRANSACTION_STORE')
     this.checkDirectory()
-    try { fs.mkdirSync(this.lock, { mode: 0o700 }) }
-    catch (error) { if (error.code === 'EEXIST') reject('CAS_LOCK_BUSY_NO_AUTOMATIC_STEAL'); throw error }
-    const lockIdentity = fs.lstatSync(this.lock), token = randomUUID()
-    const ownerFile = path.join(this.lock, 'owner.json')
-    let temporary = null, temporaryIdentity = null, ownerWritten = false
+    const lease = acquireFileLease(this.lock, { busy: 'CAS_LOCK_BUSY_NO_AUTOMATIC_STEAL',
+      invalid: 'LOCK_OWNERSHIP_CHANGED', unavailable: 'CAS_LOCK_UNAVAILABLE' })
+    let temporary = null, temporaryIdentity = null
     try {
-      const ownerFd = fs.openSync(ownerFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600)
-      try { fs.writeFileSync(ownerFd, JSON.stringify({ token })); fs.fsyncSync(ownerFd); ownerWritten = true } finally { fs.closeSync(ownerFd) }
-      syncDirectory(this.lock)
       const previous = this.read()
       checkRevision(expectedRevision, previous)
       const next = update(previous ? copy(previous) : null)
       if (next && typeof next.then === 'function') reject('ASYNC_STORE_UPDATE_FORBIDDEN')
-      this.validator(next)
+      if (this.validator !== validateDocument || this.updateValidator !== checkNext) this.validator(next)
       this.updateValidator(previous, next)
       const content = JSON.stringify(this.codec ? this.codec.encode(next) : next) + '\n'
       if (prepare && prepare(copy(previous), copy(next))?.then) reject('ASYNC_STORE_COMMIT_PREPARATION')
@@ -157,22 +174,18 @@ export class FileGraphStore {
       const fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600)
       try { temporaryIdentity = fs.fstatSync(fd); fs.writeFileSync(fd, content); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
       this.checkDirectory()
-      if (!sameFile(lockIdentity, fs.lstatSync(this.lock)) || regularJson(ownerFile)?.token !== token) reject('LOCK_OWNERSHIP_CHANGED')
+      lease.check()
       // One rename commits plan, state and events together; no separate stale snapshot.
       fs.renameSync(temporary, this.file); temporary = null
       syncDirectory(this.directory)
       return copy(next)
     } finally {
-      if (temporary && temporaryIdentity) {
-        try { if (sameFile(temporaryIdentity, fs.lstatSync(temporary))) fs.unlinkSync(temporary) }
-        catch (error) { if (error.code !== 'ENOENT') throw error }
-      }
-      // Never recursively remove a lock or infer that a previous owner is dead.
-      if (!sameFile(lockIdentity, fs.lstatSync(this.lock)) || (ownerWritten && regularJson(ownerFile)?.token !== token))
-        reject('LOCK_OWNERSHIP_CHANGED')
-      if (ownerWritten) fs.unlinkSync(ownerFile)
-      fs.rmdirSync(this.lock)
-      syncDirectory(this.directory)
+      try {
+        if (temporary && temporaryIdentity) {
+          try { if (sameFile(temporaryIdentity, fs.lstatSync(temporary))) fs.unlinkSync(temporary) }
+          catch (error) { if (error.code !== 'ENOENT') throw error }
+        }
+      } finally { lease.release() }
     }
   }
 }

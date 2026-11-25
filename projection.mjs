@@ -8,32 +8,32 @@ export const INTENT = 'plugin:project-transaction-graph/intent-v4'
 export const RECEIPT = 'plugin:project-transaction-graph/receipt-v4'
 export const RECOVERY = 'plugin:project-transaction-graph/operator-recovery-v4'
 
-const bounded = n => z.string().min(1)
+const nonempty = z.string().min(1)
 const hex = z.string().regex(/^[a-f0-9]{64}$/)
 const seq = z.number().int().nonnegative()
-const workSchema = z.object({ rootCallId: bounded(512), callSeq: seq, rootResultSeq: seq.nullable(), eventDigest: hex }).strict()
-const bashFailureSchema = z.object({ rootCallId: bounded(512), callId: bounded(512) }).strict()
-const factSchema = z.object({ seq, callId: bounded(512), tool: bounded(300), isError: z.boolean(),
+const workSchema = z.object({ rootCallId: nonempty, callSeq: seq, rootResultSeq: seq.nullable(), eventDigest: hex }).strict()
+const bashFailureSchema = z.object({ rootCallId: nonempty, callId: nonempty }).strict()
+const factSchema = z.object({ seq, callId: nonempty, tool: nonempty, isError: z.boolean(),
   outcome: z.enum(['UNVERIFIED', 'FAIL', 'NOT_RUN', 'UNKNOWN']) }).strict()
-const intentSchema = z.object({ version: z.literal(4), operationId: bounded(80), callId: bounded(512),
-  rootCallId: bounded(512), turn: seq, sessionId: bounded(512), bindingDigest: hex, claimDigest: hex,
+const intentSchema = z.object({ version: z.literal(4), operationId: nonempty, callId: nonempty,
+  rootCallId: nonempty, turn: seq, sessionId: nonempty, bindingDigest: hex, claimDigest: hex,
   operation: z.enum(['create', 'begin', 'finish', 'skip', 'reconcile', 'revise']), expectedGraphRevision: seq, candidateChecksum: hex,
   clearedWork: z.array(workSchema) }).strict()
-const dispatchSchema = z.object({ seq, subCallId: bounded(512), parentCallId: bounded(512), rootCallId: bounded(512),
-  tool: bounded(300), isError: z.boolean(), outcome: z.enum(['UNVERIFIED', 'FAIL', 'NOT_RUN', 'UNKNOWN']), eventDigest: hex, turn: seq }).strict()
-const proofSchema = z.object({ seq, callId: bounded(512), rootCallId: bounded(512), rootCallSeq: seq, rootResultSeq: seq,
-  tool: bounded(300), successful: z.boolean(), qualification: z.enum(['SUCCESS', 'FAILED', 'UNKNOWN']), isError: z.boolean(),
+const dispatchSchema = z.object({ seq, subCallId: nonempty, parentCallId: nonempty, rootCallId: nonempty,
+  tool: nonempty, isError: z.boolean(), outcome: z.enum(['UNVERIFIED', 'FAIL', 'NOT_RUN', 'UNKNOWN']), eventDigest: hex, turn: seq }).strict()
+const proofSchema = z.object({ seq, callId: nonempty, rootCallId: nonempty, rootCallSeq: seq, rootResultSeq: seq,
+  tool: nonempty, successful: z.boolean(), qualification: z.enum(['SUCCESS', 'FAILED', 'UNKNOWN']), isError: z.boolean(),
   outcome: z.enum(['UNVERIFIED', 'FAIL', 'NOT_RUN', 'UNKNOWN']), ownOutcome: z.enum(['UNVERIFIED', 'FAIL', 'NOT_RUN', 'UNKNOWN']),
   ancestorOutcomes: z.array(factSchema), eventDigest: hex, turn: seq }).strict()
 const pendingSchema = z.object({ intentSeq: seq, data: intentSchema,
   intentDigest: hex, status: z.enum(['PENDING', 'SUCCESS', 'FAILED', 'UNKNOWN']),
   rootResultSeq: seq.nullable(), rootResultDigest: hex.nullable(), workStartedAtRoot: seq.nullable(), workExecutedAtRoot: seq.nullable() }).strict()
-export const stateSchema = z.object({ sessionId: bounded(512), ownFrom: seq, turn: seq, lastSeq: z.number().int().min(-1),
+export const stateSchema = z.object({ sessionId: nonempty, ownFrom: seq, turn: seq, lastSeq: z.number().int().min(-1),
   workStarted: seq, workExecuted: seq, uncertainties: z.array(workSchema), acknowledgedWork: z.array(workSchema),
-  calls: z.record(z.string(), z.object({ tool: bounded(300), turn: seq, seq, eventDigest: hex }).strict()),
+  calls: z.record(z.string(), z.object({ tool: nonempty, turn: seq, seq, eventDigest: hex }).strict()),
   bashFailures: z.array(bashFailureSchema),
   dispatches: z.array(dispatchSchema), intents: z.array(pendingSchema),
-  proofs: z.array(proofSchema), receipts: z.array(z.object({ operationId: bounded(80), seq,
+  proofs: z.array(proofSchema), receipts: z.array(z.object({ operationId: nonempty, seq,
     status: z.enum(['COMMITTED', 'ABORTED']), graphRevision: seq, graphChecksum: hex.nullable(), eventDigest: hex }).strict()), failure: z.string().nullable() }).strict()
 export function initialState(header, inheritedEventCount = 0) {
   return { sessionId: header.id, ownFrom: inheritedEventCount, turn: 0, lastSeq: -1, workStarted: 0, workExecuted: 0,
@@ -48,8 +48,9 @@ export function outcomeOfContent(content = []) {
     let value
     try { value = JSON.parse(block.text) } catch { continue }
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue
-    if (value.passed === false || value.ok === false || value.success === false) outcomes.add('FAIL')
-    for (const status of [value.goalVerification?.status, value.verification?.status, value.status, value.state]) if (typeof status === 'string') {
+    // Plain JSON may be domain data returned by a successful tool. Only
+    // explicitly named verification results carry qualification here.
+    for (const status of [value.goalVerification?.status, value.verification?.status]) if (typeof status === 'string') {
       if (['FAIL', 'FAILED', 'ERROR'].includes(status.toUpperCase())) outcomes.add('FAIL')
       if (['NOT_RUN', 'UNKNOWN'].includes(status.toUpperCase())) outcomes.add(status.toUpperCase())
     }
@@ -218,7 +219,7 @@ export function applyEvent(state, event) {
         proofs: [...state.proofs, ...proofs] }
     }
     if (event.type === RECEIPT) {
-      const row = z.object({ operationId: bounded(80), status: z.enum(['COMMITTED', 'ABORTED']),
+      const row = z.object({ operationId: nonempty, status: z.enum(['COMMITTED', 'ABORTED']),
         graphRevision: seq, graphChecksum: hex.nullable() }).strict().parse(d)
       const previous = state.receipts.find(old => old.operationId === row.operationId)
       if (previous && ['status', 'graphRevision', 'graphChecksum'].some(key => previous[key] !== row[key])) throw new GraphError('RECEIPT_CONFLICT')
@@ -228,4 +229,4 @@ export function applyEvent(state, event) {
     return next
   } catch (error) { return { ...state, failure: `Transaction projection failed at ${event.seq}: ${error.message}` } }
 }
-export const projection = { key: KEY, stateVersion: 7, stateSchema, init: initialState, apply: applyEvent }
+export const projection = { key: KEY, stateVersion: 8, stateSchema, init: initialState, apply: applyEvent }
