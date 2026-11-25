@@ -72,7 +72,21 @@ test('semantic and invariant refusals retain a concrete field or source rejectio
   })
   assert.throws(() => validationBoundary({ stage: 'host-state' }, () => { throw new GraphError('HOST_FIXTURE_REJECTED') }), error => {
     assert.equal(error.diagnostic.stage, 'host-state')
-    assert.match(error.diagnostic.issues[0].reason, /exact check/)
+    assert.match(error.diagnostic.issues[0].reason, /Validation rule HOST_FIXTURE_REJECTED/)
+    assert.deepEqual(Object.keys(error.diagnostic.rejectionPoint).sort(), ['column', 'line', 'module'])
+    return true
+  })
+})
+
+test('recovered diagnostics expose the field and location without historical source excerpts', () => {
+  const old = { code: 'FIXTURE_REJECTED', issues: [
+    { path: '/field', reason: 'The program rejected this exact check in fixture.mjs:4: sample_private_source' },
+  ], rejectionPoint: { file: '/workspace/private/fixture.mjs', module: 'fixture.mjs', line: 4, column: 2, check: 'sample_private_source' } }
+  const error = Object.assign(new Error(old.code), { diagnostic: old })
+  assert.throws(() => validationBoundary({}, () => { throw error }), value => {
+    assert.equal(value.diagnostic.issues[0].path, '/field')
+    assert.doesNotMatch(value.message, /sample_private_source|\/workspace\/private/)
+    assert.equal(old.rejectionPoint.line, 4)
     return true
   })
 })

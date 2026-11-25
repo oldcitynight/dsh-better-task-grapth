@@ -47,7 +47,7 @@ test('PTC dispatch missing its root fails closed when the root has an unresolved
   assert.equal(state.intents[0].status, 'PENDING')
   assert.equal(state.dispatches.length, 0)
 })
-test('registry restores a v4 checkpoint by rebuilding the original log under v7', async () => {
+test('registry restores a v4 checkpoint by rebuilding the original log under v8', async () => {
   const ctx = new Context()
   try {
     await ctx.plugin(SessionProjectionRegistry)
@@ -63,7 +63,7 @@ test('registry restores a v4 checkpoint by rebuilding the original log under v7'
     assert.equal(registry.restoreFloor(checkpoint), 0)
     assert.throws(() => registry.restore(checkpoint, events.slice(1), 1, header, 0), /re-read from seq 0/)
     const restored = registry.restore(checkpoint, events, 0, header, 0).checkpoint[projection.key]
-    assert.equal(restored.ver, 7)
+    assert.equal(restored.ver, 8)
     assert.equal(restored.val.failure, null)
     assert.equal(restored.val.dispatches.length, 0)
     assert.equal(restored.val.turn, 1)
@@ -104,16 +104,18 @@ test('every PTC parent typed negative qualifies the whole chain, UNKNOWN never b
     assert.equal(chainQualification('leaf', 'root', [leaf, parent]), expected)
     assert.equal(chainSucceeded('leaf', 'root', [leaf, parent]), false)
   }
-  assert.equal(projection.stateVersion, 7)
+  assert.equal(projection.stateVersion, 8)
 })
-test('long plain text has no typed outcome, typed false/failure cannot pass as execution evidence', () => {
-  assert.equal(outcomeOfContent([{ type: 'text', text: 'x'.repeat(32769) }]), 'UNVERIFIED')
-  assert.equal(outcomeOfContent([{ type: 'text', text: '{"passed":false}' }]), 'FAIL')
-  assert.equal(outcomeOfContent([{ type: 'text', text: '{"status":"NOT_RUN"}' }]), 'NOT_RUN')
-  assert.equal(outcomeOfContent([{ type: 'text', text: '{"ok":true}' }]), 'UNVERIFIED')
-  assert.equal(outcomeOfContent([{ type: 'text', text: '{"ok":false}' }, { type: 'text', text: '{"status":"UNKNOWN"}' }]), 'UNKNOWN')
-  assert.equal(outcomeOfContent([{ type: 'text', text: '{"ok":false,"status":"NOT_RUN"}' }]), 'UNKNOWN')
-  assert.equal(outcomeOfContent([{ type: 'text', text: '{"goalVerification":{"status":"FAIL"},"status":"UNKNOWN"}' }]), 'UNKNOWN')
+test('plain tool data stays unverified and declared verification failures retain their meaning', () => {
+  const text = value => ({ type: 'text', text: JSON.stringify(value) })
+  assert.equal(outcomeOfContent([text('x'.repeat(32769))]), 'UNVERIFIED')
+  for (const value of [{ passed: false }, { status: 'NOT_RUN' }, { ok: false }, { state: 'ERROR' }])
+    assert.equal(outcomeOfContent([text(value)]), 'UNVERIFIED')
+  const failed = text({ goalVerification: { status: 'FAIL' }, status: 'UNKNOWN' })
+  const notRun = text({ verification: { status: 'NOT_RUN' } })
+  assert.equal(outcomeOfContent([failed]), 'FAIL')
+  assert.equal(outcomeOfContent([notRun]), 'NOT_RUN')
+  assert.equal(outcomeOfContent([failed, notRun]), 'UNKNOWN')
 })
 test('owned Bash exit status overrides delivery success for root and PTC tool results', () => {
   for (const nested of [false, true]) {
@@ -152,7 +154,7 @@ test('every own UNKNOWN root enters the independent ledger, regardless of admini
   for (const name of ['update_goal', 'transaction_graph_external', 'transaction_graph_read']) {
     let state = initialState({ id: 'own' })
     state = applyEvent(state, { seq: 0, type: 'tool/call', data: { callId: 'root', name } })
-    state = applyEvent(state, { seq: 1, type: 'tool/result', data: { message: { source: { callId: 'root' }, content: [{ type: 'text', text: '{"status":"UNKNOWN"}' }] } } })
+    state = applyEvent(state, { seq: 1, type: 'tool/result', data: { message: { source: { callId: 'root' }, content: [{ type: 'text', text: '{"goalVerification":{"status":"UNKNOWN"}}' }] } } })
     assert.equal(state.failure, null); assert.equal(state.uncertainties.length, 1)
     assert.equal(state.uncertainties[0].rootCallId, 'root')
   }
