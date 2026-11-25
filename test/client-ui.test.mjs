@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { createRemoteContribution } from '../remote.mjs'
 import { branchLayout, graphPresentation } from '../view-model.mjs'
 import { TOOL_NAMES } from '../tools.mjs'
+import { flattenClientModules } from '../scripts/client-module.mjs'
 
 const graph = {
   revision: 4, title: 'Publish', active: { nodeId: 'inspect', recoveryRequired: true }, pending: null,
@@ -143,6 +144,17 @@ test('selection falls back to the Host-ready leaf then the root and never infers
   const blocked = graphPresentation({ ...idle, pending: { operation: 'begin', qualification: 'UNKNOWN' }, legalNext: [] })
   assert.equal(blocked.selected.id, 'group')
   assert.equal(blocked.legal.size, 0)
+})
+
+test('module flattening keeps literal text and binds only exports from a preceding source', () => {
+  const source = 'const template = `\nexport const literal = true\n`\nexport const ready = template.length > 0\n'
+  const imports = "import {\n  ready,\n} from './view-model.mjs'\n"
+  const modules = [['./view-model.mjs', source], ['./client.mjs', imports + 'const available = ready\n']]
+  const compiled = flattenClientModules(modules)
+  assert.match(compiled, /export const literal = true/)
+  assert.equal(vm.runInNewContext(compiled + '\navailable'), true)
+  assert.throws(() => flattenClientModules(modules.toReversed()), /unsupported bundled dependency/)
+  assert.throws(() => flattenClientModules([modules[0], ['./client.mjs', "import { missing } from './view-model.mjs'"]]), /unsupported bundled binding/)
 })
 
 test('generated bundle registers the graph in the existing session composer dock', async () => {
