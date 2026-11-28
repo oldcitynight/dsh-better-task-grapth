@@ -8,7 +8,7 @@
 <!-- Generated from package.json and DSH-COMPATIBILITY.json. -->
 ## 选择与 DSH 配套的构建
 
-本包 `dsh-better-task-grapth@0.3.2-rc.19` 的目标标签为 `dsh-0.1.7-rc.2`。本线支持的 DSH 精确版本为 `0.1.7-rc.2`。插件 Node.js 要求为 `^22.19.0 || >=24.0.0`，还须满足所选 DSH 本身的 Node.js 要求。
+本包 `dsh-better-task-grapth@0.3.3-rc.9` 的目标标签为 `dsh-0.1.7-rc.2`。本线支持的 DSH 精确版本为 `0.1.7-rc.2`。插件 Node.js 要求为 `^22.19.0 || >=24.0.0`，还须满足所选 DSH 本身的 Node.js 要求。
 
 插件的 `latest` 跟随官方 DSH 的 `latest`，插件的 `next` 跟随官方 DSH 的 `alpha`。两个插件须使用同一行的 RC 后缀。npm 标签可移动，安装前先运行 `dsh --version`。[本构建兼容清单](DSH-COMPATIBILITY.json)
 
@@ -20,24 +20,24 @@
 
 ```sh
 dsh --profile bettertaskgraphs --from-default-profile web --dump-config
-dsh plugin --profile bettertaskgraphs add "$PWD/dsh-better-task-grapth-0.3.2-rc.19.tgz"
+dsh plugin --profile bettertaskgraphs add "$PWD/dsh-better-task-grapth-0.3.3-rc.9.tgz"
 dsh --profile bettertaskgraphs web
 ```
 
-单独安装提供独立任务图。完整单元模式还需在同一 profile 加入 `dsh-dynamic-context@0.1.2-rc.19`。
+单独安装提供独立任务图。完整单元模式还需在同一 profile 加入 `dsh-dynamic-context@0.1.3-rc.9`。
 
 ### 从 npm 安装
 
 下面的查询会访问公共登记库。只有两包所需版本均已公开（独立安装只需基础包）时才运行安装。若查询返回 E404，使用上一节的本地包。
 
 ```sh
-npm view --registry=https://registry.npmjs.org/ dsh-better-task-grapth@0.3.2-rc.19 version &&
-dsh plugin --profile bettertaskgraphs add dsh-better-task-grapth@0.3.2-rc.19
+npm view --registry=https://registry.npmjs.org/ dsh-better-task-grapth@0.3.3-rc.9 version &&
+dsh plugin --profile bettertaskgraphs add dsh-better-task-grapth@0.3.3-rc.9
 ```
 
 ### 从对应版本的源码构建
 
-在该维护线源码目录内运行下列命令。配套任务图尚未进入公共登记库时，构建动态上下文前先用 `npm cache add ./dsh-better-task-grapth-0.3.2-rc.19.tgz` 缓存同批基础包。
+在该维护线源码目录内运行下列命令。配套任务图尚未进入公共登记库时，构建动态上下文前先用 `npm cache add ./dsh-better-task-grapth-0.3.3-rc.9.tgz` 缓存同批基础包。
 
 ```sh
 npm ci --prefer-offline
@@ -46,14 +46,14 @@ TMPDIR="$PWD/.test-tmp" npm test
 npm run pack:bundle
 ```
 
-产物为 `dist/dsh-better-task-grapth-0.3.2-rc.19.tgz`。打开包内 [HTML 运行图谱](docs/UNIT_WORKFLOW_20261123.html) 可离线查阅流程、角色原文和联动指南。
+产物为 `dist/dsh-better-task-grapth-0.3.3-rc.9.tgz`。打开包内 [HTML 运行图谱](docs/UNIT_WORKFLOW_20261123.html) 可离线查阅流程、角色原文和联动指南。
 <!-- dsh-install:end -->
 
 ## 单元、前序与终点
 
 完整模式从根单元开始。每个单元绑定自己的基线和事实，既可以直接执行，也可以在原位展开。同层单元通过 AND、OR、NOT 组合对前序 PASS、FAILED、BLOCK 的判定。执行者只提交 PASS 或 FAILED，程序根据可达性计算 BLOCK。前序不可判定时保持等待。
 
-每层一个终点。终点有准入资格且同层没有其他可执行单元时才会被选中。终点不能成为同层其他单元的前置条件。其已审结论发起父单元拟结。面板按前后依赖推导显示顺序，插入的单元可出现在两个既有单元之间。[角色与规则](docs/UNIT_WORKFLOW_20261123.html#n-rules)
+每层一个终点。终点有准入资格且同层没有其他可执行单元时才会被选中。终点不能成为同层其他单元的前置条件。随包默认流程下其已审结论（`terminalOutcome`）发起父单元拟结（`proposedOutcome`），自定义父流程亦可在 `children()` 后独立提交拟结结论，再由父单元终审独立裁定。面板按前后依赖推导显示顺序，插入的单元可出现在两个既有单元之间。[角色与规则](docs/UNIT_WORKFLOW_20261123.html#n-rules)
 
 ## 设置与已有数据
 
@@ -92,9 +92,15 @@ const unsubscribe = graph.subscribeWorkflows(notice => {
 
 可选 `readExecutionOutput(request, {agent,signal})` 提供后台执行的只读展示流。Web 的 `transactionGraphView/output` 以游标增量读取、`outputBody` 按记录 ID 分段读取完整正文；两者都绑定当前会话及 workflowId，不接受文件路径。基础插件只处理授权和分页，实际采集与 Chat 消息展示由扩展提供。未安装扩展时不创建额外模型请求或日志。任务图 UI 保留图、状态和暂停/继续，详细执行内容位于主会话消息区。
 
+## 单元运行流扩展
+
+本开发线通过 `dsh-better-task-grapth/workflow-sdk` 导出流程实例注册与选择（`FlowRegistry`，含按作用域与实际阶段导出异步判定的 `hasStage`）、受管理步骤检查点（`ManagedSteps`），以及静态 ESM/JSON 多文件依赖闭包校验与离线归档打包函数（`createWorkflowScriptArchive`）。
+
+包内同时提供命令行工具 `dsh-workflow-script-archive`，用于为仅有入口指纹的旧版第三方多文件流程从原环境或可核对原发布副本生成只读源码归档（仅有入口指纹的旧单文件脚本在指纹一致且无需解析本地或计算式导入时可直接恢复；多文件脚本支持 `--include` 声明计算式本地导入，并在配套动态上下文的 `workflowFlows.legacyScriptRecovery` 中登记恢复）。搭配同维护线的动态上下文包后，28 个默认角色、7 类信息可见范围与四类默认流程随包分发。打开 [运行图谱的插件联动页](docs/UNIT_WORKFLOW_20261123.html#workflow-sdk) 可查看单元内、单元间（含 7 个可替换阶段）、阻塞与用户输入的边界，以及正式提交、返工重算与恢复协议。
+
 ## 后续开发方向
 
-1. 将各角色的信息可见范围移入配置文件，并开放设置页与插件动态调整接口。
+1. 开放第三方插件动态调整已有角色信息可见范围的接口。
 2. 支持原生 Windows 和 macOS。
 3. 发布独立的多 Agent 推理插件，与单元任务图联动。
 4. 为 Codex 和 OpenCode 的兼容接入做准备。
