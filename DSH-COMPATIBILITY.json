@@ -1,13 +1,26 @@
 {
   "slot": 0,
   "branch": "main",
-  "host": "0.2.3-alpha.2",
+  "host": "0.2.3-alpha.3",
   "hosts": [
+    "0.2.3-alpha.3",
     "0.2.3-alpha.2"
   ],
   "schema": 1,
-  "updateRound": 1,
+  "updateRound": 0,
   "channel": "next",
-  "taskgraph": "0.3.2-rc.10",
-  "dynamicContext": "0.1.2-rc.10"
+  "taskgraph": "0.3.3-rc.0",
+  "dynamicContext": "0.1.3-rc.0",
+  "hostSpecificPeers": {
+    "@deepseek-ai/dsh-tool-executor-native": [
+      "0.2.3-alpha.2"
+    ]
+  },
+  "hostToolAliases": {
+    "0.2.3-alpha.3": {
+      "office_render": "document_render",
+      "office_convert": "document_convert",
+      "office_recalculate": "document_recalculate"
+    }
+  }
 }
