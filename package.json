@@ -1,6 +1,6 @@
 {
   "name": "dsh-better-task-grapth",
-  "version": "0.3.2-rc.16",
+  "version": "0.3.3-rc.6",
   "workflowCompatibilityEpoch": 1,
   "os": [
     "linux"
@@ -36,7 +36,11 @@
     "./rules": "./rules.mjs",
     "./settings-form": "./settings-form.mjs",
     "./workflow-limits": "./workflow-limits.mjs",
-    "./workflow-compatibility": "./workflow-compatibility.mjs"
+    "./workflow-compatibility": "./workflow-compatibility.mjs",
+    "./workflow-sdk": {
+      "types": "./workflow-sdk.d.ts",
+      "default": "./workflow-sdk.mjs"
+    }
   },
   "files": [
     "client.js",
@@ -69,7 +73,11 @@
     "workflow-limits.json",
     "workflow-limits.mjs",
     "workflow-compatibility.mjs",
-    "docs/UNIT_WORKFLOW_20261123.html"
+    "docs/UNIT_WORKFLOW_20261123.html",
+    "workflow-sdk.mjs",
+    "workflow-script.mjs",
+    "workflow-sdk.d.ts",
+    "scripts/workflow-script-archive.mjs"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
@@ -91,6 +99,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "acorn": "8.19.0",
     "semver": "7.8.6",
     "zod": "4.6.7"
   },
@@ -106,8 +115,7 @@
     "@deepseek-ai/dsh-session": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-session-projection": "0.2.1-alpha.2",
     "@deepseek-ai/dsh-tools": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.1-alpha.2",
-    "acorn": "8.19.0"
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-alpha.2"
   },
   "dsh": {
     "bundle": {
@@ -120,5 +128,8 @@
         "@deepseek-ai/dsh-api-remotes"
       ]
     }
+  },
+  "bin": {
+    "dsh-workflow-script-archive": "./scripts/workflow-script-archive.mjs"
   }
 }
